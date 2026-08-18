@@ -2,9 +2,14 @@ package com.kirjasto.kirjastobotti
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -27,6 +32,9 @@ import com.robotemi.sdk.listeners.OnGoToLocationStatusChangedListener
 import com.robotemi.sdk.navigation.model.Position
 import com.robotemi.sdk.permission.Permission
 
+import kotlin.math.sin
+import kotlin.random.Random
+
 
 class MainActivity : ComponentActivity() {
 
@@ -37,12 +45,19 @@ class MainActivity : ComponentActivity() {
      * Main navigation / training overlay.
      */
     private lateinit var navigationOverlay: FrameLayout
+    private lateinit var navigationCard: LinearLayout
+
     private lateinit var navigationTitle: TextView
     private lateinit var navigationShelf: TextView
     private lateinit var navigationStatus: TextView
 
     private lateinit var saveShelfButton: Button
     private lateinit var cancelShelfButton: Button
+
+    private lateinit var assistanceYesButton: Button
+    private lateinit var assistanceNoButton: Button
+
+    private lateinit var robotAnimation: RobotAnimationView
 
 
     /*
@@ -61,28 +76,12 @@ class MainActivity : ComponentActivity() {
 
     /*
      * Shelf currently being taught.
-     *
-     * IMPORTANT:
-     *
-     * This is the exact shelf identifier extracted
-     * from Finna.
-     *
-     * We do NOT replace it with coordinates.
      */
     private var shelfBeingTaught: String? = null
 
 
     /*
      * Persistent local shelf database.
-     *
-     * Example:
-     *
-     * "Lapset, 86.5 ROW"
-     *      -> x = 1.5
-     *      -> y = -8.0
-     *      -> yaw = 90.0
-     *
-     * The data survives app restarts.
      */
     private lateinit var shelfDatabase: ShelfDatabase
 
@@ -106,22 +105,12 @@ class MainActivity : ComponentActivity() {
             "home base"
 
 
-        /*
-         * Request code for temi SETTINGS permission.
-         */
         private const val SETTINGS_PERMISSION_REQUEST_CODE =
             1001
 
 
-        /*
-         * temi tablet/head upright angle.
-         */
         private const val TABLET_UP_ANGLE = 55
 
-
-        /*
-         * Speed used when moving the tablet.
-         */
         private const val TABLET_TILT_SPEED = 1f
     }
 
@@ -130,11 +119,6 @@ class MainActivity : ComponentActivity() {
     // SHELF DATABASE
     // =========================================================
 
-    /*
-     * Small persistent database using SharedPreferences.
-     *
-     * No external database library is required.
-     */
     private class ShelfDatabase(
         context: Context
     ) {
@@ -146,15 +130,6 @@ class MainActivity : ComponentActivity() {
             )
 
 
-        /*
-         * Store one shelf.
-         *
-         * Key:
-         *     shelf identifier
-         *
-         * Value:
-         *     x|y|yaw
-         */
         fun save(
             shelf: String,
             position: Position
@@ -169,9 +144,6 @@ class MainActivity : ComponentActivity() {
         }
 
 
-        /*
-         * Get saved position.
-         */
         fun get(
             shelf: String
         ): Position? {
@@ -212,9 +184,6 @@ class MainActivity : ComponentActivity() {
         }
 
 
-        /*
-         * Check whether shelf exists.
-         */
         fun contains(
             shelf: String
         ): Boolean {
@@ -225,12 +194,798 @@ class MainActivity : ComponentActivity() {
         }
 
 
-        /*
-         * Number of saved shelves.
-         */
         fun count(): Int {
 
             return preferences.all.size
+        }
+    }
+
+
+    // =========================================================
+    // CUSTOM ROBOT ANIMATION
+    // =========================================================
+
+    private class RobotAnimationView(
+        context: Context
+    ) : View(context) {
+
+        private val paint =
+            Paint(Paint.ANTI_ALIAS_FLAG)
+
+        private val facePaint =
+            Paint(Paint.ANTI_ALIAS_FLAG)
+
+        private val path =
+            Path()
+
+
+        private var running =
+            false
+
+
+        private var animationStartTime =
+            0L
+
+
+        /*
+         * Random movement timing.
+         */
+        private var movementDuration =
+            1800L
+
+
+        private var movementPause =
+            500L
+
+
+        private var nextMovementChange =
+            0L
+
+
+        private var movementDirection =
+            1f
+
+
+        private var movementPosition =
+            0f
+
+
+        init {
+
+            paint.strokeCap =
+                Paint.Cap.ROUND
+
+            paint.strokeJoin =
+                Paint.Join.ROUND
+
+
+            facePaint.strokeCap =
+                Paint.Cap.ROUND
+
+            facePaint.strokeJoin =
+                Paint.Join.ROUND
+
+
+            setLayerType(
+                View.LAYER_TYPE_SOFTWARE,
+                null
+            )
+        }
+
+
+        fun startAnimation() {
+
+            running =
+                true
+
+
+            animationStartTime =
+                System.currentTimeMillis()
+
+
+            movementPosition =
+                0f
+
+
+            movementDirection =
+                1f
+
+
+            movementDuration =
+                Random.nextLong(
+                    1500L,
+                    2300L
+                )
+
+
+            movementPause =
+                Random.nextLong(
+                    350L,
+                    850L
+                )
+
+
+            nextMovementChange =
+                animationStartTime +
+                        movementDuration
+
+
+            invalidate()
+        }
+
+
+        fun stopAnimation() {
+
+            running =
+                false
+
+            invalidate()
+        }
+
+
+        private fun updateMovement(
+            now: Long
+        ) {
+
+            if (!running) {
+                return
+            }
+
+
+            if (
+                now >=
+                nextMovementChange
+            ) {
+
+                movementDirection *=
+                    -1f
+
+
+                movementDuration =
+                    Random.nextLong(
+                        1400L,
+                        2400L
+                    )
+
+
+                movementPause =
+                    Random.nextLong(
+                        300L,
+                        850L
+                    )
+
+
+                nextMovementChange =
+                    now +
+                            movementDuration +
+                            movementPause
+            }
+
+
+            val remaining =
+                nextMovementChange - now
+
+
+            val progress =
+                if (
+                    remaining >
+                    movementPause
+                ) {
+
+                    val movementTime =
+                        movementDuration.toFloat()
+
+
+                    val elapsed =
+                        (
+                                movementDuration +
+                                        movementPause -
+                                        remaining
+                                )
+                            .coerceAtLeast(0L)
+                            .toFloat()
+
+
+                    (
+                            elapsed /
+                                    movementTime
+                            )
+                        .coerceIn(
+                            0f,
+                            1f
+                        )
+
+                } else {
+
+                    1f
+                }
+
+
+            /*
+             * Smoothstep.
+             */
+            val smooth =
+                progress *
+                        progress *
+                        (
+                                3f -
+                                        2f *
+                                        progress
+                                )
+
+
+            movementPosition =
+                if (
+                    movementDirection >
+                    0
+                ) {
+
+                    smooth
+
+                } else {
+
+                    1f - smooth
+                }
+        }
+
+
+        override fun onDraw(
+            canvas: Canvas
+        ) {
+
+            super.onDraw(
+                canvas
+            )
+
+
+            if (
+                width <= 0 ||
+                height <= 0
+            ) {
+                return
+            }
+
+
+            val now =
+                System.currentTimeMillis()
+
+
+            updateMovement(
+                now
+            )
+
+
+            val scale =
+                minOf(
+                    width / 260f,
+                    height / 230f
+                )
+
+
+            /*
+             * Only about 10 px on each side.
+             *
+             * This is deliberately subtle.
+             */
+            val movement =
+                (
+                        movementPosition -
+                                0.5f
+                        ) *
+                        20f *
+                        scale
+
+
+            /*
+             * Very subtle bob.
+             */
+            val elapsed =
+                if (running) {
+
+                    now -
+                            animationStartTime
+
+                } else {
+
+                    0L
+                }
+
+
+            val bob =
+                sin(
+                    elapsed /
+                            700.0 *
+                            Math.PI *
+                            2.0
+                ).toFloat() *
+                        1.2f *
+                        scale
+
+
+            val centerX =
+                width / 2f +
+                        movement
+
+
+            val centerY =
+                height / 2f +
+                        bob
+
+
+            canvas.save()
+
+
+            // =====================================================
+            // SHADOW
+            // =====================================================
+
+            paint.style =
+                Paint.Style.FILL
+
+            paint.color =
+                0x30000000
+
+
+            val shadow =
+                RectF(
+                    centerX - 56f * scale,
+                    centerY + 76f * scale,
+                    centerX + 56f * scale,
+                    centerY + 88f * scale
+                )
+
+
+            canvas.drawOval(
+                shadow,
+                paint
+            )
+
+
+            // =====================================================
+            // BODY
+            // =====================================================
+
+            paint.style =
+                Paint.Style.FILL
+
+            paint.color =
+                0xFFF7F9FB.toInt()
+
+
+            val body =
+                RectF(
+                    centerX - 62f * scale,
+                    centerY - 12f * scale,
+                    centerX + 62f * scale,
+                    centerY + 75f * scale
+                )
+
+
+            canvas.drawRoundRect(
+                body,
+                22f * scale,
+                22f * scale,
+                paint
+            )
+
+
+            paint.style =
+                Paint.Style.STROKE
+
+            paint.strokeWidth =
+                5f * scale
+
+            paint.color =
+                0xFF101820.toInt()
+
+
+            canvas.drawRoundRect(
+                body,
+                22f * scale,
+                22f * scale,
+                paint
+            )
+
+
+            // =====================================================
+            // BODY SCREEN
+            // =====================================================
+
+            paint.style =
+                Paint.Style.FILL
+
+            paint.color =
+                0xFFE9EFF3.toInt()
+
+
+            val screen =
+                RectF(
+                    centerX - 43f * scale,
+                    centerY + 8f * scale,
+                    centerX + 43f * scale,
+                    centerY + 59f * scale
+                )
+
+
+            canvas.drawRoundRect(
+                screen,
+                13f * scale,
+                13f * scale,
+                paint
+            )
+
+
+            paint.style =
+                Paint.Style.STROKE
+
+            paint.strokeWidth =
+                4f * scale
+
+            paint.color =
+                0xFF101820.toInt()
+
+
+            canvas.drawRoundRect(
+                screen,
+                13f * scale,
+                13f * scale,
+                paint
+            )
+
+
+            // =====================================================
+            // BODY DETAIL
+            // =====================================================
+
+            path.reset()
+
+
+            path.moveTo(
+                centerX - 42f * scale,
+                centerY + 38f * scale
+            )
+
+
+            path.cubicTo(
+                centerX - 25f * scale,
+                centerY + 38f * scale,
+                centerX - 26f * scale,
+                centerY + 20f * scale,
+                centerX - 10f * scale,
+                centerY + 20f * scale
+            )
+
+
+            path.cubicTo(
+                centerX + 7f * scale,
+                centerY + 20f * scale,
+                centerX + 11f * scale,
+                centerY + 45f * scale,
+                centerX + 43f * scale,
+                centerY + 45f * scale
+            )
+
+
+            canvas.drawPath(
+                path,
+                paint
+            )
+
+
+            // =====================================================
+            // HEAD
+            // =====================================================
+
+            paint.style =
+                Paint.Style.FILL
+
+            paint.color =
+                0xFFF7F9FB.toInt()
+
+
+            val head =
+                RectF(
+                    centerX - 48f * scale,
+                    centerY - 81f * scale,
+                    centerX + 48f * scale,
+                    centerY + 1f * scale
+                )
+
+
+            canvas.drawRoundRect(
+                head,
+                17f * scale,
+                17f * scale,
+                paint
+            )
+
+
+            paint.style =
+                Paint.Style.STROKE
+
+            paint.strokeWidth =
+                5f * scale
+
+            paint.color =
+                0xFF101820.toInt()
+
+
+            canvas.drawRoundRect(
+                head,
+                17f * scale,
+                17f * scale,
+                paint
+            )
+
+
+            // =====================================================
+            // FACE
+            // =====================================================
+
+            val face =
+                RectF(
+                    centerX - 34f * scale,
+                    centerY - 64f * scale,
+                    centerX + 34f * scale,
+                    centerY - 13f * scale
+                )
+
+
+            paint.strokeWidth =
+                4f * scale
+
+
+            canvas.drawRoundRect(
+                face,
+                11f * scale,
+                11f * scale,
+                paint
+            )
+
+
+            facePaint.color =
+                0xFF101820.toInt()
+
+            facePaint.strokeWidth =
+                4f * scale
+
+
+            /*
+             * Eyes.
+             */
+            canvas.drawLine(
+                centerX - 17f * scale,
+                centerY - 52f * scale,
+                centerX - 17f * scale,
+                centerY - 43f * scale,
+                facePaint
+            )
+
+
+            canvas.drawLine(
+                centerX + 17f * scale,
+                centerY - 52f * scale,
+                centerX + 17f * scale,
+                centerY - 43f * scale,
+                facePaint
+            )
+
+
+            /*
+             * Small smile.
+             */
+            path.reset()
+
+
+            path.moveTo(
+                centerX - 19f * scale,
+                centerY - 34f * scale
+            )
+
+
+            path.cubicTo(
+                centerX - 10f * scale,
+                centerY - 27f * scale,
+                centerX - 5f * scale,
+                centerY - 23f * scale,
+                centerX,
+                centerY - 23f * scale
+            )
+
+
+            path.cubicTo(
+                centerX + 6f * scale,
+                centerY - 23f * scale,
+                centerX + 12f * scale,
+                centerY - 29f * scale,
+                centerX + 19f * scale,
+                centerY - 34f * scale
+            )
+
+
+            canvas.drawPath(
+                path,
+                facePaint
+            )
+
+
+            // =====================================================
+            // ANTENNA
+            // =====================================================
+
+            paint.strokeWidth =
+                4f * scale
+
+            paint.color =
+                0xFF101820.toInt()
+
+
+            canvas.drawLine(
+                centerX,
+                centerY - 81f * scale,
+                centerX,
+                centerY - 101f * scale,
+                paint
+            )
+
+
+            paint.style =
+                Paint.Style.FILL
+
+
+            canvas.drawCircle(
+                centerX,
+                centerY - 105f * scale,
+                4f * scale,
+                paint
+            )
+
+
+            // =====================================================
+            // WHEELS
+            // =====================================================
+
+            val leftWheelX =
+                centerX - 36f * scale
+
+            val rightWheelX =
+                centerX + 36f * scale
+
+            val wheelY =
+                centerY + 80f * scale
+
+
+            paint.style =
+                Paint.Style.FILL
+
+            paint.color =
+                0xFFF7F9FB.toInt()
+
+
+            canvas.drawCircle(
+                leftWheelX,
+                wheelY,
+                19f * scale,
+                paint
+            )
+
+
+            canvas.drawCircle(
+                rightWheelX,
+                wheelY,
+                19f * scale,
+                paint
+            )
+
+
+            paint.style =
+                Paint.Style.STROKE
+
+            paint.strokeWidth =
+                5f * scale
+
+            paint.color =
+                0xFF101820.toInt()
+
+
+            canvas.drawCircle(
+                leftWheelX,
+                wheelY,
+                19f * scale,
+                paint
+            )
+
+
+            canvas.drawCircle(
+                rightWheelX,
+                wheelY,
+                19f * scale,
+                paint
+            )
+
+
+            // =====================================================
+            // ROTATING WHEEL DETAILS
+            // =====================================================
+
+            val wheelRotation =
+                elapsed /
+                        55f
+
+
+            canvas.save()
+
+
+            canvas.rotate(
+                wheelRotation,
+                leftWheelX,
+                wheelY
+            )
+
+
+            paint.strokeWidth =
+                3f * scale
+
+
+            canvas.drawLine(
+                leftWheelX - 9f * scale,
+                wheelY,
+                leftWheelX + 9f * scale,
+                wheelY,
+                paint
+            )
+
+
+            canvas.drawLine(
+                leftWheelX,
+                wheelY - 9f * scale,
+                leftWheelX,
+                wheelY + 9f * scale,
+                paint
+            )
+
+
+            canvas.restore()
+
+
+            canvas.save()
+
+
+            canvas.rotate(
+                wheelRotation,
+                rightWheelX,
+                wheelY
+            )
+
+
+            canvas.drawLine(
+                rightWheelX - 9f * scale,
+                wheelY,
+                rightWheelX + 9f * scale,
+                wheelY,
+                paint
+            )
+
+
+            canvas.drawLine(
+                rightWheelX,
+                wheelY - 9f * scale,
+                rightWheelX,
+                wheelY + 9f * scale,
+                paint
+            )
+
+
+            canvas.restore()
+
+
+            canvas.restore()
+
+
+            if (running) {
+
+                postInvalidateOnAnimation()
+            }
         }
     }
 
@@ -279,7 +1034,8 @@ class MainActivity : ComponentActivity() {
                         "track" -> {
 
                             navigationStatus.text =
-                                "Seuraan sinua.\nVie minut oikean hyllyn luo."
+                                "Seuraan sinua.\n" +
+                                        "Vie minut oikean hyllyn luo."
                         }
 
 
@@ -353,24 +1109,18 @@ class MainActivity : ComponentActivity() {
                         !returningHome
                     ) {
 
-                        goingToShelf = false
-                        returningHome = true
+                        goingToShelf =
+                            false
+
+
+                        returningHome =
+                            false
 
 
                         runOnUiThread {
 
                             showArrivedScreen()
                         }
-
-
-                        window.decorView.postDelayed(
-                            {
-
-                                goHome()
-
-                            },
-                            2500
-                        )
 
 
                         return
@@ -383,8 +1133,11 @@ class MainActivity : ComponentActivity() {
 
                     if (returningHome) {
 
-                        goingToShelf = false
-                        returningHome = false
+                        goingToShelf =
+                            false
+
+                        returningHome =
+                            false
 
 
                         runOnUiThread {
@@ -413,8 +1166,11 @@ class MainActivity : ComponentActivity() {
                     OnGoToLocationStatusChangedListener.ABORT
                 ) {
 
-                    goingToShelf = false
-                    returningHome = false
+                    goingToShelf =
+                        false
+
+                    returningHome =
+                        false
 
 
                     runOnUiThread {
@@ -439,7 +1195,7 @@ class MainActivity : ComponentActivity() {
                                 hideNavigationScreen()
 
                             },
-                            2500
+                            1800
                         )
                     }
                 }
@@ -469,17 +1225,11 @@ class MainActivity : ComponentActivity() {
             ShelfDatabase(this)
 
 
-        /*
-         * Listen for normal navigation.
-         */
         robot.addOnGoToLocationStatusChangedListener(
             navigationListener
         )
 
 
-        /*
-         * Listen for follow mode.
-         */
         robot.addOnBeWithMeStatusChangedListener(
             followListener
         )
@@ -502,7 +1252,6 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
 
         super.onResume()
-
 
         disableTemiNavigationBillboard()
 
@@ -612,14 +1361,7 @@ class MainActivity : ComponentActivity() {
 
                 override fun handleOnBackPressed() {
 
-                    /*
-                     * Do not let Android back interrupt
-                     * shelf teaching accidentally.
-                     */
-                    if (
-                        teachingShelf
-                    ) {
-
+                    if (teachingShelf) {
                         return
                     }
 
@@ -641,7 +1383,8 @@ class MainActivity : ComponentActivity() {
 
                     } else {
 
-                        isEnabled = false
+                        isEnabled =
+                            false
 
                         onBackPressedDispatcher
                             .onBackPressed()
@@ -742,23 +1485,33 @@ class MainActivity : ComponentActivity() {
 
         webView.settings.apply {
 
-            javaScriptEnabled = true
+            javaScriptEnabled =
+                true
 
-            domStorageEnabled = true
+            domStorageEnabled =
+                true
 
-            databaseEnabled = true
+            databaseEnabled =
+                true
 
-            loadsImagesAutomatically = true
+            loadsImagesAutomatically =
+                true
 
-            useWideViewPort = true
+            useWideViewPort =
+                true
 
-            loadWithOverviewMode = false
+            loadWithOverviewMode =
+                false
 
-            setSupportZoom(false)
+            setSupportZoom(
+                false
+            )
 
-            builtInZoomControls = false
+            builtInZoomControls =
+                false
 
-            displayZoomControls = false
+            displayZoomControls =
+                false
 
             mixedContentMode =
                 WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
@@ -766,23 +1519,16 @@ class MainActivity : ComponentActivity() {
             mediaPlaybackRequiresUserGesture =
                 false
 
-            textZoom = 100
+            textZoom =
+                100
         }
 
-
-        // =====================================================
-        // JAVASCRIPT BRIDGE
-        // =====================================================
 
         webView.addJavascriptInterface(
             AndroidBridge(),
             "Android"
         )
 
-
-        // =====================================================
-        // WEBVIEW CLIENT
-        // =====================================================
 
         webView.webViewClient =
             object : WebViewClient() {
@@ -875,10 +1621,6 @@ class MainActivity : ComponentActivity() {
         )
 
 
-        // =====================================================
-        // NAVIGATION / TEACHING OVERLAY
-        // =====================================================
-
         createNavigationOverlay(
             root
         )
@@ -888,10 +1630,6 @@ class MainActivity : ComponentActivity() {
             root
         )
 
-
-        // =====================================================
-        // LOAD FINNA
-        // =====================================================
 
         webView.loadUrl(
             applyAlwaysFilter(
@@ -914,11 +1652,7 @@ class MainActivity : ComponentActivity() {
 
 
         navigationOverlay.setBackgroundColor(
-            Color.rgb(
-                15,
-                25,
-                35
-            )
+            0xCC05080C.toInt()
         )
 
 
@@ -930,6 +1664,74 @@ class MainActivity : ComponentActivity() {
             1000f
 
 
+        /*
+         * Main card.
+         */
+        navigationCard =
+            LinearLayout(this)
+
+
+        navigationCard.orientation =
+            LinearLayout.VERTICAL
+
+
+        navigationCard.gravity =
+            Gravity.CENTER_HORIZONTAL
+
+
+        navigationCard.setPadding(
+            55,
+            40,
+            55,
+            45
+        )
+
+
+        navigationCard.background =
+            roundedBackground(
+                0xFF101820.toInt(),
+                32f
+            )
+
+
+        navigationCard.elevation =
+            30f
+
+
+        val cardParams =
+            FrameLayout.LayoutParams(
+                780,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+
+
+        cardParams.gravity =
+            Gravity.CENTER
+
+
+        navigationOverlay.addView(
+            navigationCard,
+            cardParams
+        )
+
+
+        // =====================================================
+        // ROBOT ANIMATION
+        // =====================================================
+
+        robotAnimation =
+            RobotAnimationView(this)
+
+
+        navigationCard.addView(
+            robotAnimation,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                245
+            )
+        )
+
+
         // =====================================================
         // TITLE
         // =====================================================
@@ -938,12 +1740,8 @@ class MainActivity : ComponentActivity() {
             TextView(this)
 
 
-        navigationTitle.text =
-            "Vie minut hyllylle"
-
-
         navigationTitle.textSize =
-            42f
+            38f
 
 
         navigationTitle.setTextColor(
@@ -952,12 +1750,21 @@ class MainActivity : ComponentActivity() {
 
 
         navigationTitle.gravity =
-            android.view.Gravity.CENTER
+            Gravity.CENTER
 
 
         navigationTitle.setTypeface(
             null,
             android.graphics.Typeface.BOLD
+        )
+
+
+        navigationCard.addView(
+            navigationTitle,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         )
 
 
@@ -969,131 +1776,17 @@ class MainActivity : ComponentActivity() {
             TextView(this)
 
 
-        navigationShelf.text =
-            ""
-
-
         navigationShelf.textSize =
-            34f
+            28f
 
 
         navigationShelf.setTextColor(
-            Color.rgb(
-                100,
-                200,
-                255
-            )
+            0xFF8DD8FF.toInt()
         )
 
 
         navigationShelf.gravity =
-            android.view.Gravity.CENTER
-
-
-        // =====================================================
-        // STATUS
-        // =====================================================
-
-        navigationStatus =
-            TextView(this)
-
-
-        navigationStatus.text =
-            ""
-
-
-        navigationStatus.textSize =
-            25f
-
-
-        navigationStatus.setTextColor(
-            Color.LTGRAY
-        )
-
-
-        navigationStatus.gravity =
-            android.view.Gravity.CENTER
-
-
-        // =====================================================
-        // SAVE BUTTON
-        // =====================================================
-
-        saveShelfButton =
-            Button(this)
-
-
-        saveShelfButton.text =
-            "TALLENNA HYLLY TÄHÄN"
-
-
-        saveShelfButton.textSize =
-            22f
-
-
-        saveShelfButton.setOnClickListener {
-
-            saveCurrentShelf()
-        }
-
-
-        saveShelfButton.visibility =
-            View.GONE
-
-
-        // =====================================================
-        // CANCEL BUTTON
-        // =====================================================
-
-        cancelShelfButton =
-            Button(this)
-
-
-        cancelShelfButton.text =
-            "PERUUTA"
-
-
-        cancelShelfButton.textSize =
-            20f
-
-
-        cancelShelfButton.setOnClickListener {
-
-            cancelShelfTeaching()
-        }
-
-
-        // =====================================================
-        // VERTICAL CONTENT
-        // =====================================================
-
-        val vertical =
-            LinearLayout(this)
-
-
-        vertical.orientation =
-            LinearLayout.VERTICAL
-
-
-        vertical.gravity =
-            android.view.Gravity.CENTER
-
-
-        vertical.setPadding(
-            50,
-            50,
-            50,
-            50
-        )
-
-
-        vertical.addView(
-            navigationTitle,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
+            Gravity.CENTER
 
 
         val shelfParams =
@@ -1104,20 +1797,40 @@ class MainActivity : ComponentActivity() {
 
 
         shelfParams.topMargin =
-            30
-
+            15
 
         shelfParams.bottomMargin =
-            20
+            15
 
 
-        vertical.addView(
+        navigationCard.addView(
             navigationShelf,
             shelfParams
         )
 
 
-        vertical.addView(
+        // =====================================================
+        // STATUS
+        // =====================================================
+
+        navigationStatus =
+            TextView(this)
+
+
+        navigationStatus.textSize =
+            22f
+
+
+        navigationStatus.setTextColor(
+            0xFFB8C4CC.toInt()
+        )
+
+
+        navigationStatus.gravity =
+            Gravity.CENTER
+
+
+        navigationCard.addView(
             navigationStatus,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1126,43 +1839,171 @@ class MainActivity : ComponentActivity() {
         )
 
 
+        // =====================================================
+        // SAVE BUTTON
+        // =====================================================
+
+        saveShelfButton =
+            createButton(
+                "TALLENNA HYLLY TÄHÄN"
+            )
+
+
+        saveShelfButton.setOnClickListener {
+
+            saveCurrentShelf()
+        }
+
+
         val saveParams =
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+                75
             )
 
 
         saveParams.topMargin =
-            45
+            30
 
 
-        saveParams.bottomMargin =
-            15
-
-
-        vertical.addView(
+        navigationCard.addView(
             saveShelfButton,
             saveParams
         )
 
 
-        vertical.addView(
-            cancelShelfButton,
+        // =====================================================
+        // CANCEL BUTTON
+        // =====================================================
+
+        cancelShelfButton =
+            createSecondaryButton(
+                "PERUUTA"
+            )
+
+
+        cancelShelfButton.setOnClickListener {
+
+            if (teachingShelf) {
+
+                cancelShelfTeaching()
+
+            } else {
+
+                cancelNavigation()
+            }
+        }
+
+
+        val cancelParams =
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+                70
             )
+
+
+        cancelParams.topMargin =
+            12
+
+
+        navigationCard.addView(
+            cancelShelfButton,
+            cancelParams
         )
 
 
-        navigationOverlay.addView(
-            vertical,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
+        // =====================================================
+        // ASSISTANCE YES
+        // =====================================================
+
+        assistanceYesButton =
+            createButton(
+                "KYLLÄ, TARVITSEN APUA"
             )
+
+
+        assistanceYesButton.setOnClickListener {
+
+            /*
+             * User still needs help.
+             *
+             * Just remove the overlay.
+             * Robot remains at the shelf.
+             */
+            goingToShelf =
+                false
+
+            returningHome =
+                false
+
+            hideNavigationScreen()
+        }
+
+
+        val yesParams =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                75
+            )
+
+
+        yesParams.topMargin =
+            30
+
+
+        navigationCard.addView(
+            assistanceYesButton,
+            yesParams
         )
+
+
+        // =====================================================
+        // ASSISTANCE NO
+        // =====================================================
+
+        assistanceNoButton =
+            createSecondaryButton(
+                "EI, PALAUTA KOTIIN"
+            )
+
+
+        assistanceNoButton.setOnClickListener {
+
+            returnHomeFromShelf()
+        }
+
+
+        val noParams =
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                70
+            )
+
+
+        noParams.topMargin =
+            12
+
+
+        navigationCard.addView(
+            assistanceNoButton,
+            noParams
+        )
+
+
+        /*
+         * Initial visibility.
+         */
+        saveShelfButton.visibility =
+            View.GONE
+
+        cancelShelfButton.visibility =
+            View.GONE
+
+        assistanceYesButton.visibility =
+            View.GONE
+
+        assistanceNoButton.visibility =
+            View.GONE
 
 
         root.addView(
@@ -1176,6 +2017,100 @@ class MainActivity : ComponentActivity() {
 
 
     // =========================================================
+    // BUTTON HELPERS
+    // =========================================================
+
+    private fun createButton(
+        text: String
+    ): Button {
+
+        val button =
+            Button(this)
+
+
+        button.text =
+            text
+
+
+        button.textSize =
+            18f
+
+
+        button.setTextColor(
+            Color.WHITE
+        )
+
+
+        button.isAllCaps =
+            false
+
+
+        button.background =
+            roundedBackground(
+                0xFF1976A8.toInt(),
+                18f
+            )
+
+
+        return button
+    }
+
+
+    private fun createSecondaryButton(
+        text: String
+    ): Button {
+
+        val button =
+            Button(this)
+
+
+        button.text =
+            text
+
+
+        button.textSize =
+            18f
+
+
+        button.setTextColor(
+            Color.WHITE
+        )
+
+
+        button.isAllCaps =
+            false
+
+
+        button.background =
+            roundedBackground(
+                0xFF26343D.toInt(),
+                18f
+            )
+
+
+        return button
+    }
+
+
+    private fun roundedBackground(
+        color: Int,
+        radius: Float
+    ): android.graphics.drawable.GradientDrawable {
+
+        return android.graphics.drawable.GradientDrawable()
+            .apply {
+
+                setColor(
+                    color
+                )
+
+                cornerRadius =
+                    radius
+            }
+    }
+
+
+    // =========================================================
     // START SHELF REQUEST
     // =========================================================
 
@@ -1183,9 +2118,6 @@ class MainActivity : ComponentActivity() {
         shelf: String
     ) {
 
-        /*
-         * Check the local database FIRST.
-         */
         val savedPosition =
             shelfDatabase.get(
                 shelf
@@ -1195,12 +2127,6 @@ class MainActivity : ComponentActivity() {
         if (
             savedPosition != null
         ) {
-
-            /*
-             * -----------------------------------------------
-             * SHELF ALREADY KNOWN
-             * -----------------------------------------------
-             */
 
             Toast.makeText(
                 this,
@@ -1219,12 +2145,6 @@ class MainActivity : ComponentActivity() {
         }
 
 
-        /*
-         * -----------------------------------------------
-         * SHELF NOT KNOWN
-         * -----------------------------------------------
-         */
-
         startShelfTeaching(
             shelf
         )
@@ -1239,9 +2159,6 @@ class MainActivity : ComponentActivity() {
         shelf: String
     ) {
 
-        /*
-         * Remember exactly which shelf we're teaching.
-         */
         shelfBeingTaught =
             shelf
 
@@ -1265,24 +2182,10 @@ class MainActivity : ComponentActivity() {
 
         try {
 
-            /*
-             * Stop anything currently moving.
-             */
             robot.stopMovement()
 
-
-            /*
-             * Make sure the tablet is upright.
-             */
             tiltTabletUp()
 
-
-            /*
-             * Start temi's real follow mode.
-             *
-             * The user now walks to the desired shelf
-             * and temi follows them.
-             */
             robot.beWithMe()
 
 
@@ -1326,7 +2229,7 @@ class MainActivity : ComponentActivity() {
     ) {
 
         navigationTitle.text =
-            "Vie minut hyllylle"
+            "Opetetaan uusi hylly"
 
 
         navigationShelf.text =
@@ -1335,12 +2238,27 @@ class MainActivity : ComponentActivity() {
 
         navigationStatus.text =
             "Seuraan sinua.\n\n" +
-                    "Vie temi oikean hyllyn kohdalle.\n" +
-                    "Paina sitten \"TALLENNA HYLLY TÄHÄN\"."
+                    "Vie minut oikean hyllyn kohdalle."
+
+
+        saveShelfButton.text =
+            "TALLENNA HYLLY TÄHÄN"
 
 
         saveShelfButton.visibility =
             View.VISIBLE
+
+
+        cancelShelfButton.visibility =
+            View.VISIBLE
+
+
+        assistanceYesButton.visibility =
+            View.GONE
+
+
+        assistanceNoButton.visibility =
+            View.GONE
 
 
         navigationOverlay.visibility =
@@ -1348,6 +2266,9 @@ class MainActivity : ComponentActivity() {
 
 
         navigationOverlay.bringToFront()
+
+
+        robotAnimation.startAnimation()
     }
 
 
@@ -1357,10 +2278,6 @@ class MainActivity : ComponentActivity() {
 
     private fun saveCurrentShelf() {
 
-        /*
-         * Make absolutely sure we know which shelf
-         * is currently being taught.
-         */
         val shelf =
             shelfBeingTaught
 
@@ -1381,13 +2298,6 @@ class MainActivity : ComponentActivity() {
 
         try {
 
-            /*
-             * IMPORTANT:
-             *
-             * Get temi's REAL current map position.
-             *
-             * This does NOT use any hard-coded coordinate.
-             */
             val position =
                 robot.getPosition()
 
@@ -1400,24 +2310,15 @@ class MainActivity : ComponentActivity() {
             )
 
 
-            /*
-             * Stop following before saving.
-             */
             robot.stopMovement()
 
 
-            /*
-             * Save the shelf permanently.
-             */
             shelfDatabase.save(
                 shelf,
                 position
             )
 
 
-            /*
-             * Clear teaching state.
-             */
             teachingShelf =
                 false
 
@@ -1426,11 +2327,8 @@ class MainActivity : ComponentActivity() {
                 null
 
 
-            /*
-             * Update screen.
-             */
             navigationTitle.text =
-                "Hylly tallennettu!"
+                "Hylly tallennettu"
 
 
             navigationShelf.text =
@@ -1438,37 +2336,37 @@ class MainActivity : ComponentActivity() {
 
 
             navigationStatus.text =
-                "X: ${position.x}\n" +
-                        "Y: ${position.y}\n" +
-                        "Yaw: ${position.yaw}\n\n" +
-                        "Tallennettu tietokantaan."
+                "Sijainti tallennettu onnistuneesti.\n\n" +
+                        "Voit jatkaa tästä normaalisti."
 
 
             saveShelfButton.visibility =
                 View.GONE
 
 
+            cancelShelfButton.visibility =
+                View.VISIBLE
+
+
             /*
-             * Show a toast too.
+             * Important:
+             *
+             * NO automatic return home.
+             *
+             * The robot remains here.
              */
+            returningHome =
+                false
+
+            goingToShelf =
+                false
+
+
             Toast.makeText(
                 this,
                 "Hylly tallennettu: $shelf",
                 Toast.LENGTH_LONG
             ).show()
-
-
-            /*
-             * After a short delay, return home.
-             */
-            window.decorView.postDelayed(
-                {
-
-                    returnHomeAfterTeaching()
-
-                },
-                2500
-            )
 
         } catch (
             e: Exception
@@ -1480,64 +2378,6 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(
                 this,
                 "Hyllyn tallennus epäonnistui: ${e.message}",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
-
-
-    // =========================================================
-    // RETURN HOME AFTER TEACHING
-    // =========================================================
-
-    private fun returnHomeAfterTeaching() {
-
-        try {
-
-            teachingShelf =
-                false
-
-
-            goingToShelf =
-                false
-
-
-            returningHome =
-                true
-
-
-            navigationTitle.text =
-                "Hylly tallennettu"
-
-
-            navigationStatus.text =
-                "Palaan kotiin..."
-
-
-            robot.stopMovement()
-
-
-            robot.goTo(
-                HOME_BASE_LOCATION
-            )
-
-        } catch (
-            e: Exception
-        ) {
-
-            e.printStackTrace()
-
-
-            returningHome =
-                false
-
-
-            hideNavigationScreen()
-
-
-            Toast.makeText(
-                this,
-                "Kotiinpaluu epäonnistui: ${e.message}",
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -1627,12 +2467,6 @@ class MainActivity : ComponentActivity() {
                 "Navigoidaan tallennettuun sijaintiin..."
 
 
-            /*
-             * Use the exact position that was saved
-             * when the shelf was taught.
-             *
-             * Yaw is preserved.
-             */
             robot.goToPosition(
                 position,
                 false,
@@ -1692,11 +2526,30 @@ class MainActivity : ComponentActivity() {
             View.GONE
 
 
+        cancelShelfButton.text =
+            "PERUUTA"
+
+
+        cancelShelfButton.visibility =
+            View.VISIBLE
+
+
+        assistanceYesButton.visibility =
+            View.GONE
+
+
+        assistanceNoButton.visibility =
+            View.GONE
+
+
         navigationOverlay.visibility =
             View.VISIBLE
 
 
         navigationOverlay.bringToFront()
+
+
+        robotAnimation.startAnimation()
     }
 
 
@@ -1705,6 +2558,9 @@ class MainActivity : ComponentActivity() {
     // =========================================================
 
     private fun showArrivedScreen() {
+
+        robotAnimation.stopAnimation()
+
 
         navigationTitle.text =
             "Saavuttu!"
@@ -1715,11 +2571,23 @@ class MainActivity : ComponentActivity() {
 
 
         navigationStatus.text =
-            "Palaan kotiin..."
+            "Tarvitsetko vielä avustusta?"
 
 
         saveShelfButton.visibility =
             View.GONE
+
+
+        cancelShelfButton.visibility =
+            View.GONE
+
+
+        assistanceYesButton.visibility =
+            View.VISIBLE
+
+
+        assistanceNoButton.visibility =
+            View.VISIBLE
 
 
         navigationOverlay.visibility =
@@ -1731,10 +2599,150 @@ class MainActivity : ComponentActivity() {
 
 
     // =========================================================
+    // CANCEL NORMAL NAVIGATION
+    // =========================================================
+
+    private fun cancelNavigation() {
+
+        try {
+
+            robot.stopMovement()
+
+        } catch (
+            e: Exception
+        ) {
+
+            e.printStackTrace()
+        }
+
+
+        goingToShelf =
+            false
+
+
+        returningHome =
+            false
+
+
+        teachingShelf =
+            false
+
+
+        tiltTabletUp()
+
+
+        hideNavigationScreen()
+
+
+        Toast.makeText(
+            this,
+            "Navigointi peruutettu.",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+
+    // =========================================================
+    // RETURN HOME FROM SHELF
+    // =========================================================
+
+    private fun returnHomeFromShelf() {
+
+        try {
+
+            robot.stopMovement()
+
+
+            goingToShelf =
+                false
+
+
+            returningHome =
+                true
+
+
+            navigationTitle.text =
+                "Palaan kotiin"
+
+
+            navigationShelf.text =
+                ""
+
+
+            navigationStatus.text =
+                "Palaan kotiasemalle..."
+
+
+            saveShelfButton.visibility =
+                View.GONE
+
+
+            cancelShelfButton.text =
+                "PERUUTA"
+
+
+            cancelShelfButton.visibility =
+                View.VISIBLE
+
+
+            assistanceYesButton.visibility =
+                View.GONE
+
+
+            assistanceNoButton.visibility =
+                View.GONE
+
+
+            navigationOverlay.visibility =
+                View.VISIBLE
+
+
+            navigationOverlay.bringToFront()
+
+
+            robotAnimation.startAnimation()
+
+
+            robot.goTo(
+                HOME_BASE_LOCATION
+            )
+
+        } catch (
+            e: Exception
+        ) {
+
+            e.printStackTrace()
+
+
+            returningHome =
+                false
+
+
+            hideNavigationScreen()
+
+
+            Toast.makeText(
+                this,
+                "Kotiinpaluu epäonnistui: ${e.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+
+    // =========================================================
     // HIDE NAVIGATION SCREEN
     // =========================================================
 
     private fun hideNavigationScreen() {
+
+        if (
+            ::robotAnimation.isInitialized
+        ) {
+
+            robotAnimation.stopAnimation()
+        }
+
 
         navigationOverlay.visibility =
             View.GONE
@@ -1755,12 +2763,6 @@ class MainActivity : ComponentActivity() {
                 );
 
 
-                /*
-                 * -------------------------------------------------
-                 * TEXT HELPERS
-                 * -------------------------------------------------
-                 */
-
                 function cleanText(text) {
 
                     if (!text) {
@@ -1774,12 +2776,6 @@ class MainActivity : ComponentActivity() {
                         .toLowerCase();
                 }
 
-
-                /*
-                 * -------------------------------------------------
-                 * FINNA RECORD HELPERS
-                 * -------------------------------------------------
-                 */
 
                 function getBookContainer(element) {
 
@@ -1949,17 +2945,6 @@ class MainActivity : ComponentActivity() {
                     return null;
                 }
 
-
-                /*
-                 * -------------------------------------------------
-                 * OLD "VIE HYLLYLLE" BUTTONS
-                 *
-                 * These still work for normal book results:
-                 *
-                 *   saved shelf -> navigate
-                 *   unknown shelf -> old teaching flow
-                 * -------------------------------------------------
-                 */
 
                 function replaceReservationButton(
                     button
@@ -2170,12 +3155,6 @@ class MainActivity : ComponentActivity() {
                 }
 
 
-                /*
-                 * -------------------------------------------------
-                 * CSS
-                 * -------------------------------------------------
-                 */
-
                 const oldStyle =
                     document.getElementById(
                         "kirjastobotti-style"
@@ -2215,7 +3194,6 @@ class MainActivity : ComponentActivity() {
                         cursor: pointer !important;
                     }
 
-
                 `;
 
 
@@ -2223,12 +3201,6 @@ class MainActivity : ComponentActivity() {
                     style
                 );
 
-
-                /*
-                 * -------------------------------------------------
-                 * WATCH FINNA FOR DYNAMIC RESULTS
-                 * -------------------------------------------------
-                 */
 
                 scanForLoginButtons();
 
@@ -2371,8 +3343,6 @@ class MainActivity : ComponentActivity() {
                 ).show()
             }
         }
-
-
     }
 
 
@@ -2395,9 +3365,11 @@ class MainActivity : ComponentActivity() {
             e: Exception
         ) {
 
-            goingToShelf = false
+            goingToShelf =
+                false
 
-            returningHome = false
+            returningHome =
+                false
 
 
             runOnUiThread {
@@ -2506,7 +3478,9 @@ class MainActivity : ComponentActivity() {
         try {
 
             if (
-                teachingShelf
+                teachingShelf ||
+                goingToShelf ||
+                returningHome
             ) {
 
                 robot.stopMovement()
