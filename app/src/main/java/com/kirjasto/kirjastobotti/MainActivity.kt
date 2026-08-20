@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var robot: Robot
     private lateinit var webView: WebView
+    private lateinit var libraryConfig: LibraryConfig
 
     // LAN admin panel / remote driving
     private lateinit var cameraStreamer: CameraStreamer
@@ -93,12 +94,6 @@ class MainActivity : ComponentActivity() {
 
 
     companion object {
-
-        private const val WEBSITE_URL =
-            "https://outi.finna.fi/Search/Results?lookfor=&type=AllFields"
-
-        private const val ALWAYS_FILTER =
-            "~building:\"2/Outi/OU/SA/\""
 
         private const val WEBSITE_SCALE = 1.5
 
@@ -471,11 +466,6 @@ class MainActivity : ComponentActivity() {
                 )
 
 
-            /*
-             * Only about 10 px on each side.
-             *
-             * This is deliberately subtle.
-             */
             val movement =
                 (
                         movementPosition -
@@ -485,9 +475,6 @@ class MainActivity : ComponentActivity() {
                         scale
 
 
-            /*
-             * Very subtle bob.
-             */
             val elapsed =
                 if (running) {
 
@@ -642,10 +629,6 @@ class MainActivity : ComponentActivity() {
             )
 
 
-            // =====================================================
-            // BODY DETAIL
-            // =====================================================
-
             path.reset()
 
 
@@ -759,9 +742,6 @@ class MainActivity : ComponentActivity() {
                 4f * scale
 
 
-            /*
-             * Eyes.
-             */
             canvas.drawLine(
                 centerX - 17f * scale,
                 centerY - 52f * scale,
@@ -780,9 +760,6 @@ class MainActivity : ComponentActivity() {
             )
 
 
-            /*
-             * Small smile.
-             */
             path.reset()
 
 
@@ -912,10 +889,6 @@ class MainActivity : ComponentActivity() {
                 paint
             )
 
-
-            // =====================================================
-            // ROTATING WHEEL DETAILS
-            // =====================================================
 
             val wheelRotation =
                 elapsed /
@@ -1109,10 +1082,6 @@ class MainActivity : ComponentActivity() {
                     }
 
 
-                    // =================================================
-                    // ARRIVED AT SHELF
-                    // =================================================
-
                     if (
                         goingToShelf &&
                         !returningHome
@@ -1135,10 +1104,6 @@ class MainActivity : ComponentActivity() {
                         return
                     }
 
-
-                    // =================================================
-                    // ARRIVED HOME
-                    // =================================================
 
                     if (returningHome) {
 
@@ -1165,10 +1130,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-
-                // =================================================
-                // NAVIGATION ABORTED
-                // =================================================
 
                 else if (
                     status ==
@@ -1225,19 +1186,44 @@ class MainActivity : ComponentActivity() {
             savedInstanceState
         )
 
+        libraryConfig =
+            LibraryConfig(this)
+
 
         robot =
             Robot.getInstance()
 
-        // Start the LAN admin panel. It is intentionally hosted by the temi
-        // tablet itself, so another device on the same LAN can open it.
-        cameraStreamer = CameraStreamer(this)
-        adminServer = AdminServer(robot, cameraStreamer)
+
+        cameraStreamer =
+            CameraStreamer(this)
+
+        adminServer =
+            AdminServer(
+                this,
+                robot,
+                cameraStreamer
+            )
+
         adminServer.start()
-        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+
+
+        if (
+            checkSelfPermission(
+                Manifest.permission.CAMERA
+            ) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+
             cameraStreamer.start()
+
         } else {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST_CODE)
+
+            requestPermissions(
+                arrayOf(
+                    Manifest.permission.CAMERA
+                ),
+                CAMERA_PERMISSION_REQUEST_CODE
+            )
         }
 
 
@@ -1270,18 +1256,25 @@ class MainActivity : ComponentActivity() {
         permissions: Array<String>,
         grantResults: IntArray
     ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE &&
-            grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+
+        super.onRequestPermissionsResult(
+            requestCode,
+            permissions,
+            grantResults
+        )
+
+
+        if (
+            requestCode ==
+            CAMERA_PERMISSION_REQUEST_CODE &&
+            grantResults.firstOrNull() ==
+            PackageManager.PERMISSION_GRANTED
         ) {
+
             cameraStreamer.start()
         }
     }
 
-
-    // =========================================================
-    // RESUME
-    // =========================================================
 
     override fun onResume() {
 
@@ -1329,10 +1322,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-
-    // =========================================================
-    // REQUEST SETTINGS PERMISSION
-    // =========================================================
 
     private fun requestSettingsPermission() {
 
@@ -1460,7 +1449,8 @@ class MainActivity : ComponentActivity() {
 
             if (
                 existingFilters.any {
-                    it == ALWAYS_FILTER
+                    it ==
+                            libraryConfig.alwaysFilter
                 }
             ) {
 
@@ -1472,7 +1462,7 @@ class MainActivity : ComponentActivity() {
                 .buildUpon()
                 .appendQueryParameter(
                     "filter[]",
-                    ALWAYS_FILTER
+                    libraryConfig.alwaysFilter
                 )
                 .build()
                 .toString()
@@ -1503,10 +1493,6 @@ class MainActivity : ComponentActivity() {
             Color.BLACK
         )
 
-
-        // =====================================================
-        // WEBVIEW
-        // =====================================================
 
         webView =
             WebView(this)
@@ -1614,7 +1600,7 @@ class MainActivity : ComponentActivity() {
                     if (
                         url != null &&
                         url.startsWith(
-                            WEBSITE_URL
+                            libraryConfig.websiteUrl
                         )
                     ) {
 
@@ -1667,7 +1653,7 @@ class MainActivity : ComponentActivity() {
 
         webView.loadUrl(
             applyAlwaysFilter(
-                WEBSITE_URL
+                libraryConfig.websiteUrl
             )
         )
     }
@@ -1698,9 +1684,6 @@ class MainActivity : ComponentActivity() {
             1000f
 
 
-        /*
-         * Main card.
-         */
         navigationCard =
             LinearLayout(this)
 
@@ -1749,10 +1732,6 @@ class MainActivity : ComponentActivity() {
         )
 
 
-        // =====================================================
-        // ROBOT ANIMATION
-        // =====================================================
-
         robotAnimation =
             RobotAnimationView(this)
 
@@ -1765,10 +1744,6 @@ class MainActivity : ComponentActivity() {
             )
         )
 
-
-        // =====================================================
-        // TITLE
-        // =====================================================
 
         navigationTitle =
             TextView(this)
@@ -1801,10 +1776,6 @@ class MainActivity : ComponentActivity() {
             )
         )
 
-
-        // =====================================================
-        // SHELF
-        // =====================================================
 
         navigationShelf =
             TextView(this)
@@ -1843,10 +1814,6 @@ class MainActivity : ComponentActivity() {
         )
 
 
-        // =====================================================
-        // STATUS
-        // =====================================================
-
         navigationStatus =
             TextView(this)
 
@@ -1872,10 +1839,6 @@ class MainActivity : ComponentActivity() {
             )
         )
 
-
-        // =====================================================
-        // SAVE BUTTON
-        // =====================================================
 
         saveShelfButton =
             createButton(
@@ -1905,10 +1868,6 @@ class MainActivity : ComponentActivity() {
             saveParams
         )
 
-
-        // =====================================================
-        // CANCEL BUTTON
-        // =====================================================
 
         cancelShelfButton =
             createSecondaryButton(
@@ -1946,10 +1905,6 @@ class MainActivity : ComponentActivity() {
         )
 
 
-        // =====================================================
-        // ASSISTANCE YES
-        // =====================================================
-
         assistanceYesButton =
             createButton(
                 "KYLLÄ, TARVITSEN APUA"
@@ -1958,12 +1913,6 @@ class MainActivity : ComponentActivity() {
 
         assistanceYesButton.setOnClickListener {
 
-            /*
-             * User still needs help.
-             *
-             * Just remove the overlay.
-             * Robot remains at the shelf.
-             */
             goingToShelf =
                 false
 
@@ -1990,10 +1939,6 @@ class MainActivity : ComponentActivity() {
             yesParams
         )
 
-
-        // =====================================================
-        // ASSISTANCE NO
-        // =====================================================
 
         assistanceNoButton =
             createSecondaryButton(
@@ -2024,9 +1969,6 @@ class MainActivity : ComponentActivity() {
         )
 
 
-        /*
-         * Initial visibility.
-         */
         saveShelfButton.visibility =
             View.GONE
 
@@ -2254,10 +2196,6 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    // =========================================================
-    // SHOW TEACHING SCREEN
-    // =========================================================
-
     private fun showTeachingScreen(
         shelf: String
     ) {
@@ -2305,10 +2243,6 @@ class MainActivity : ComponentActivity() {
         robotAnimation.startAnimation()
     }
 
-
-    // =========================================================
-    // SAVE CURRENT SHELF
-    // =========================================================
 
     private fun saveCurrentShelf() {
 
@@ -2382,13 +2316,6 @@ class MainActivity : ComponentActivity() {
                 View.VISIBLE
 
 
-            /*
-             * Important:
-             *
-             * NO automatic return home.
-             *
-             * The robot remains here.
-             */
             returningHome =
                 false
 
@@ -2417,10 +2344,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-
-    // =========================================================
-    // CANCEL SHELF TEACHING
-    // =========================================================
 
     private fun cancelShelfTeaching() {
 
@@ -2465,10 +2388,6 @@ class MainActivity : ComponentActivity() {
         ).show()
     }
 
-
-    // =========================================================
-    // GO TO SAVED SHELF
-    // =========================================================
 
     private fun goToSavedShelf(
         shelf: String,
@@ -2536,10 +2455,6 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    // =========================================================
-    // SHOW NORMAL NAVIGATION SCREEN
-    // =========================================================
-
     private fun showNavigationScreen(
         shelf: String
     ) {
@@ -2587,10 +2502,6 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    // =========================================================
-    // SHOW ARRIVED
-    // =========================================================
-
     private fun showArrivedScreen() {
 
         robotAnimation.stopAnimation()
@@ -2632,10 +2543,6 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    // =========================================================
-    // CANCEL NORMAL NAVIGATION
-    // =========================================================
-
     private fun cancelNavigation() {
 
         try {
@@ -2675,10 +2582,6 @@ class MainActivity : ComponentActivity() {
         ).show()
     }
 
-
-    // =========================================================
-    // RETURN HOME FROM SHELF
-    // =========================================================
 
     private fun returnHomeFromShelf() {
 
@@ -2764,10 +2667,6 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    // =========================================================
-    // HIDE NAVIGATION SCREEN
-    // =========================================================
-
     private fun hideNavigationScreen() {
 
         if (
@@ -2789,6 +2688,18 @@ class MainActivity : ComponentActivity() {
 
     private fun customizeWebsite() {
 
+        /*
+         * Escape the configured library name before putting it
+         * into the JavaScript string.
+         */
+        val escapedLibraryBranchName =
+            libraryConfig.libraryBranchName
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+
+
         val javascript = """
             (function() {
 
@@ -2809,6 +2720,18 @@ class MainActivity : ComponentActivity() {
                         .trim()
                         .toLowerCase();
                 }
+
+
+                /*
+                 * Library branch comes from LibraryConfig.kt.
+                 *
+                 * Example:
+                 * "Oulun keskustakirjasto Saari"
+                 */
+                const libraryBranchName =
+                    cleanText(
+                        "$escapedLibraryBranchName"
+                    );
 
 
                 function getBookContainer(element) {
@@ -2881,7 +2804,12 @@ class MainActivity : ComponentActivity() {
                 }
 
 
-                function getSaariShelf(record) {
+                /*
+                 * Same old shelf logic as getSaariShelf(),
+                 * except the branch name now comes from
+                 * LibraryConfig.kt.
+                 */
+                function getLibraryShelf(record) {
 
                     if (!record) {
                         return null;
@@ -2924,7 +2852,7 @@ class MainActivity : ComponentActivity() {
 
                         if (
                             branchName.includes(
-                                "oulun keskustakirjasto saari"
+                                libraryBranchName
                             )
                         ) {
 
@@ -3028,7 +2956,7 @@ class MainActivity : ComponentActivity() {
 
 
                     const shelf =
-                        getSaariShelf(
+                        getLibraryShelf(
                             record
                         );
 
@@ -3509,8 +3437,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
 
-        try { adminServer.stop() } catch (_: Exception) {}
-        try { cameraStreamer.stop() } catch (_: Exception) {}
+        try {
+            adminServer.stop()
+        } catch (
+            _: Exception
+        ) {
+        }
+
+
+        try {
+            cameraStreamer.stop()
+        } catch (
+            _: Exception
+        ) {
+        }
+
 
         try {
 

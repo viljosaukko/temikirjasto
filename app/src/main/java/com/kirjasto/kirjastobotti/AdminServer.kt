@@ -1,155 +1,185 @@
 package com.kirjasto.kirjastobotti
 
+import android.content.Context
 import android.util.Log
+
 import com.robotemi.sdk.Robot
+
 import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStream
+
 import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
+
 import java.nio.charset.StandardCharsets
+
 import java.util.Collections
+
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+
 import kotlin.math.abs
+
 
 /**
  * LAN-only HTTP server for the temi admin panel.
  *
- * Movement:
+ * Manual movement:
  *
- *   x = forward / backward
- *   y = left / right
- *
- * Keyboard:
- *
- *   W = forward
- *   S = backward
- *   A = left
- *   D = right
- *
- * Controller:
- *
- *   Left stick up    = forward
- *   Left stick down  = backward
- *   Left stick left  = left
- *   Left stick right = right
- *
- * Manual movement uses:
- *
- *   robot.skidJoy(x, y, false)
- *
- * The false parameter disables smart obstacle avoidance for
- * this direct/manual movement command.
+ * x = forward / backward
+ * y = left / right
  */
 class AdminServer(
+    private val context: Context,
     private val robot: Robot,
     private val camera: CameraStreamer
 ) {
 
+    private val libraryConfig =
+        LibraryConfig(context)
+
+
     companion object {
-        private const val TAG = "KirjastobottiAdmin"
-        const val PORT = 8080
+
+        private const val TAG =
+            "KirjastobottiAdmin"
+
+        const val PORT =
+            8080
     }
 
-    private var serverSocket: ServerSocket? = null
-    private var acceptThread: Thread? = null
+
+    private var serverSocket:
+            ServerSocket? =
+        null
+
+
+    private var acceptThread:
+            Thread? =
+        null
+
 
     private val workers =
         Executors.newCachedThreadPool()
 
-    private val safety: ScheduledExecutorService =
+
+    private val safety:
+            ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor()
 
-    @Volatile
-    private var lastCommandAt = 0L
 
     @Volatile
-    private var lastX = 0f
+    private var lastCommandAt =
+        0L
+
 
     @Volatile
-    private var lastY = 0f
+    private var lastX =
+        0f
+
+
+    @Volatile
+    private var lastY =
+        0f
 
 
     fun start() {
 
-        if (serverSocket != null) {
+        if (
+            serverSocket != null
+        ) {
             return
         }
 
+
         try {
 
-            serverSocket = ServerSocket(
-                PORT,
-                16,
-                InetAddress.getByName("0.0.0.0")
-            )
+            serverSocket =
+                ServerSocket(
+                    PORT,
+                    16,
+                    InetAddress.getByName(
+                        "0.0.0.0"
+                    )
+                )
 
-            acceptThread = Thread {
 
-                while (
-                    !Thread.currentThread().isInterrupted
-                ) {
+            acceptThread =
+                Thread {
 
-                    try {
+                    while (
+                        !Thread.currentThread()
+                            .isInterrupted
+                    ) {
 
-                        val socket =
-                            serverSocket?.accept()
-                                ?: break
+                        try {
 
-                        workers.execute {
-                            handle(socket)
+                            val socket =
+                                serverSocket
+                                    ?.accept()
+                                    ?: break
+
+
+                            workers.execute {
+
+                                handle(socket)
+                            }
+
+                        } catch (
+                            e: Exception
+                        ) {
+
+                            if (
+                                serverSocket != null
+                            ) {
+
+                                Log.e(
+                                    TAG,
+                                    "Accept failed",
+                                    e
+                                )
+                            }
+
+                            break
                         }
-
-                    } catch (e: Exception) {
-
-                        if (serverSocket != null) {
-                            Log.e(
-                                TAG,
-                                "Accept failed",
-                                e
-                            )
-                        }
-
-                        break
                     }
+
+                }.apply {
+
+                    name =
+                        "Kirjastobotti-admin-accept"
+
+                    start()
                 }
 
-            }.apply {
 
-                name =
-                    "Kirjastobotti-admin-accept"
+            safety.scheduleAtFixedRate(
+                {
 
-                start()
-            }
+                    if (
+                        System.currentTimeMillis() -
+                        lastCommandAt >
+                        550L &&
+                        (
+                                abs(lastX) > 0.001f ||
+                                        abs(lastY) > 0.001f
+                                )
+                    ) {
 
+                        stopRobot()
+                    }
 
-            /*
-             * Safety timeout.
-             *
-             * If movement commands stop arriving for
-             * more than 550 ms, stop the robot.
-             */
-            safety.scheduleAtFixedRate({
-
-                if (
-                    System.currentTimeMillis() -
-                    lastCommandAt > 550L &&
-                    (
-                            abs(lastX) > 0.001f ||
-                                    abs(lastY) > 0.001f
-                            )
-                ) {
-
-                    stopRobot()
-                }
-
-            }, 250, 250, TimeUnit.MILLISECONDS)
+                },
+                250,
+                250,
+                TimeUnit.MILLISECONDS
+            )
 
 
             Log.i(
@@ -157,7 +187,9 @@ class AdminServer(
                 "Admin panel listening on port $PORT"
             )
 
-        } catch (e: Exception) {
+        } catch (
+            e: Exception
+        ) {
 
             Log.e(
                 TAG,
@@ -173,29 +205,45 @@ class AdminServer(
     fun stop() {
 
         try {
+
             serverSocket?.close()
-        } catch (_: Exception) {
+
+        } catch (
+            _: Exception
+        ) {
         }
 
-        serverSocket = null
+
+        serverSocket =
+            null
+
 
         acceptThread?.interrupt()
-        acceptThread = null
+
+        acceptThread =
+            null
+
 
         stopRobot()
 
+
         safety.shutdownNow()
+
         workers.shutdownNow()
     }
 
 
-    private fun handle(socket: Socket) {
+    private fun handle(
+        socket: Socket
+    ) {
 
         socket.use {
 
             try {
 
-                it.soTimeout = 5000
+                it.soTimeout =
+                    5000
+
 
                 val reader =
                     BufferedReader(
@@ -207,31 +255,38 @@ class AdminServer(
                         )
                     )
 
+
                 val requestLine =
                     reader.readLine()
                         ?: return
 
 
-                /*
-                 * Read remaining HTTP headers.
-                 */
-                while (true) {
+                while (
+                    true
+                ) {
 
                     val line =
                         reader.readLine()
                             ?: break
 
-                    if (line.isEmpty()) {
+
+                    if (
+                        line.isEmpty()
+                    ) {
                         break
                     }
                 }
 
 
                 val parts =
-                    requestLine.split(" ")
+                    requestLine.split(
+                        " "
+                    )
 
 
-                if (parts.size < 2) {
+                if (
+                    parts.size < 2
+                ) {
 
                     writeText(
                         it.getOutputStream(),
@@ -246,11 +301,16 @@ class AdminServer(
                 val method =
                     parts[0]
 
+
                 val rawTarget =
                     parts[1]
 
+
                 val target =
-                    rawTarget.substringBefore('?')
+                    rawTarget.substringBefore(
+                        '?'
+                    )
+
 
                 val query =
                     parseQuery(
@@ -301,8 +361,17 @@ class AdminServer(
                             abs(lastX) > 0.001f ||
                                     abs(lastY) > 0.001f
 
+
                         val json =
-                            """{"camera":${camera.isRunning},"ip":"${localIp()}","port":$PORT,"moving":$moving}"""
+                            """
+                            {
+                                "camera":${camera.isRunning},
+                                "ip":"${localIp()}",
+                                "port":$PORT,
+                                "moving":$moving
+                            }
+                            """.trimIndent()
+
 
                         writeText(
                             it.getOutputStream(),
@@ -314,34 +383,166 @@ class AdminServer(
 
 
                     /*
+                     * Get library configuration.
+                     */
+                    method == "GET" &&
+                            target ==
+                            "/api/library-config" -> {
+
+                        val json =
+                            "{" +
+                                    "\"websiteUrl\":\"" +
+                                    jsonEscape(
+                                        libraryConfig.websiteUrl
+                                    ) +
+                                    "\"," +
+
+                                    "\"alwaysFilter\":\"" +
+                                    jsonEscape(
+                                        libraryConfig.alwaysFilter
+                                    ) +
+                                    "\"," +
+
+                                    "\"libraryBranchName\":\"" +
+                                    jsonEscape(
+                                        libraryConfig.libraryBranchName
+                                    ) +
+                                    "\"" +
+                                    "}"
+
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            json,
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+
+                    /*
+                     * Save library configuration.
+                     */
+                    method == "POST" &&
+                            target ==
+                            "/api/library-config" -> {
+
+                        val websiteUrl =
+                            query["websiteUrl"]
+                                ?.trim()
+                                .orEmpty()
+
+
+                        val alwaysFilter =
+                            query["alwaysFilter"]
+                                ?.trim()
+                                .orEmpty()
+
+
+                        val libraryBranchName =
+                            query["libraryBranchName"]
+                                ?.trim()
+                                .orEmpty()
+
+
+                        if (
+                            websiteUrl.isBlank()
+                        ) {
+
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                """
+                                {
+                                    "ok":false,
+                                    "error":"websiteUrl is required"
+                                }
+                                """.trimIndent(),
+                                "application/json; charset=utf-8"
+                            )
+
+                        } else if (
+                            libraryBranchName.isBlank()
+                        ) {
+
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                """
+                                {
+                                    "ok":false,
+                                    "error":"libraryBranchName is required"
+                                }
+                                """.trimIndent(),
+                                "application/json; charset=utf-8"
+                            )
+
+                        } else {
+
+                            libraryConfig.update(
+                                websiteUrl =
+                                    websiteUrl,
+
+                                alwaysFilter =
+                                    alwaysFilter,
+
+                                libraryBranchName =
+                                    libraryBranchName
+                            )
+
+
+                            writeText(
+                                it.getOutputStream(),
+                                200,
+                                """{"ok":true}""",
+                                "application/json; charset=utf-8"
+                            )
+                        }
+                    }
+
+
+                    /*
                      * Movement API.
                      *
                      * x:
-                     *   +1 = forward
-                     *   -1 = backward
+                     * +1 = forward
+                     * -1 = backward
                      *
                      * y:
-                     *   +1 = right
-                     *   -1 = left
+                     * +1 = right
+                     * -1 = left
                      */
                     method == "POST" &&
-                            target == "/api/move" -> {
+                            target ==
+                            "/api/move" -> {
 
                         val x =
                             query["x"]
                                 ?.toFloatOrNull()
-                                ?.coerceIn(-1f, 1f)
+                                ?.coerceIn(
+                                    -1f,
+                                    1f
+                                )
                                 ?: 0f
+
 
                         val y =
                             query["y"]
                                 ?.toFloatOrNull()
-                                ?.coerceIn(-1f, 1f)
+                                ?.coerceIn(
+                                    -1f,
+                                    1f
+                                )
                                 ?: 0f
 
 
-                        lastX = x
-                        lastY = y
+                        lastX =
+                            x
+
+
+                        lastY =
+                            y
+
 
                         lastCommandAt =
                             System.currentTimeMillis()
@@ -358,19 +559,15 @@ class AdminServer(
 
                             try {
 
-                                /*
-                                 * IMPORTANT:
-                                 *
-                                 * false = manual/direct movement,
-                                 * without smart obstacle avoidance.
-                                 */
                                 robot.skidJoy(
                                     x,
                                     y,
                                     false
                                 )
 
-                            } catch (e: Exception) {
+                            } catch (
+                                e: Exception
+                            ) {
 
                                 Log.e(
                                     TAG,
@@ -394,9 +591,11 @@ class AdminServer(
                      * Stop API.
                      */
                     method == "POST" &&
-                            target == "/api/stop" -> {
+                            target ==
+                            "/api/stop" -> {
 
                         stopRobot()
+
 
                         writeText(
                             it.getOutputStream(),
@@ -417,7 +616,9 @@ class AdminServer(
                     }
                 }
 
-            } catch (e: Exception) {
+            } catch (
+                e: Exception
+            ) {
 
                 Log.e(
                     TAG,
@@ -431,8 +632,13 @@ class AdminServer(
 
     private fun stopRobot() {
 
-        lastX = 0f
-        lastY = 0f
+        lastX =
+            0f
+
+
+        lastY =
+            0f
+
 
         lastCommandAt =
             System.currentTimeMillis()
@@ -442,7 +648,9 @@ class AdminServer(
 
             robot.stopMovement()
 
-        } catch (e: Exception) {
+        } catch (
+            e: Exception
+        ) {
 
             Log.e(
                 TAG,
@@ -453,6 +661,30 @@ class AdminServer(
     }
 
 
+    private fun jsonEscape(
+        value: String
+    ): String {
+
+        return value
+            .replace(
+                "\\",
+                "\\\\"
+            )
+            .replace(
+                "\"",
+                "\\\""
+            )
+            .replace(
+                "\n",
+                "\\n"
+            )
+            .replace(
+                "\r",
+                "\\r"
+            )
+    }
+
+
     private fun parseQuery(
         query: String
     ): Map<String, String> {
@@ -460,6 +692,7 @@ class AdminServer(
         return query
             .split('&')
             .filter {
+
                 it.isNotBlank()
             }
             .mapNotNull {
@@ -470,20 +703,25 @@ class AdminServer(
                         limit = 2
                     )
 
-                if (p.size == 2) {
+
+                if (
+                    p.size == 2
+                ) {
 
                     URLDecoder.decode(
                         p[0],
                         "UTF-8"
-                    ) to URLDecoder.decode(
-                        p[1],
-                        "UTF-8"
-                    )
+                    ) to
+                            URLDecoder.decode(
+                                p[1],
+                                "UTF-8"
+                            )
 
                 } else {
 
                     null
                 }
+
             }
             .toMap()
     }
@@ -504,12 +742,21 @@ class AdminServer(
 
 
         val reason =
-            when (status) {
+            when (
+                status
+            ) {
 
-                200 -> "OK"
-                400 -> "Bad Request"
-                404 -> "Not Found"
-                else -> "Error"
+                200 ->
+                    "OK"
+
+                400 ->
+                    "Bad Request"
+
+                404 ->
+                    "Not Found"
+
+                else ->
+                    "Error"
             }
 
 
@@ -528,7 +775,11 @@ class AdminServer(
             )
         )
 
-        out.write(bytes)
+
+        out.write(
+            bytes
+        )
+
 
         out.flush()
     }
@@ -544,6 +795,7 @@ class AdminServer(
                         .getNetworkInterfaces()
                 )
                 .flatMap {
+
                     Collections.list(
                         it.inetAddresses
                     )
@@ -552,12 +804,13 @@ class AdminServer(
 
                     !it.isLoopbackAddress &&
                             it is java.net.Inet4Address
-
                 }
                 ?.hostAddress
                 ?: "unknown"
 
-        } catch (_: Exception) {
+        } catch (
+            _: Exception
+        ) {
 
             "unknown"
         }
@@ -567,7 +820,8 @@ class AdminServer(
 
 private object AdminPage {
 
-    val HTML = """
+    val HTML =
+        """
 <!doctype html>
 
 <html>
@@ -583,7 +837,8 @@ private object AdminPage {
 
 <style>
 
-html,body{
+html,
+body{
 
     margin:0;
 
@@ -624,7 +879,8 @@ main{
 
     background:#141b23;
 
-    border:1px solid #283442;
+    border:
+        1px solid #283442;
 
     border-radius:16px;
 
@@ -643,15 +899,26 @@ h1{
 }
 
 
+h2{
+
+    font-size:17px;
+
+    margin:0
+}
+
+
 .top{
 
     display:flex;
 
-    justify-content:space-between;
+    justify-content:
+        space-between;
 
     align-items:center;
 
-    padding:14px 16px;
+    padding:
+        14px
+        16px;
 
     border-bottom:
         1px solid #283442
@@ -713,10 +980,14 @@ h1{
     display:grid;
 
     grid-template-columns:
-        1fr 1fr 1fr;
+        1fr
+        1fr
+        1fr;
 
     grid-template-rows:
-        1fr 1fr 1fr;
+        1fr
+        1fr
+        1fr;
 
     gap:10px
 }
@@ -741,7 +1012,9 @@ button{
 
     user-select:none;
 
-    -webkit-user-select:none
+    -webkit-user-select:none;
+
+    cursor:pointer
 }
 
 
@@ -842,7 +1115,8 @@ button:active,
     display:grid;
 
     grid-template-columns:
-        1fr 1fr;
+        1fr
+        1fr;
 
     gap:8px;
 
@@ -869,25 +1143,88 @@ button:active,
 }
 
 
+.config-label{
+
+    display:block;
+
+    margin-top:14px;
+
+    margin-bottom:6px;
+
+    font-size:13px;
+
+    color:#c7d0da
+}
+
+
+.config-input{
+
+    width:100%;
+
+    box-sizing:border-box;
+
+    padding:10px;
+
+    border-radius:10px;
+
+    border:
+        1px solid #3a4858;
+
+    background:#0e141b;
+
+    color:#eef2f7;
+
+    font-size:14px
+}
+
+
+.config-save{
+
+    width:100%;
+
+    margin-top:16px;
+
+    padding:12px;
+
+    font-size:15px;
+
+    background:#345a78
+}
+
+
+#libraryConfigStatus{
+
+    margin-top:10px;
+
+    font-size:13px;
+
+    color:#9aa7b5
+}
+
+
 @media(max-width:850px){
 
     main{
 
-        grid-template-columns:1fr;
+        grid-template-columns:
+            1fr;
 
         overflow:auto
     }
+
 
     .card:first-child{
 
         height:60vh
     }
 
+
     #feed{
 
         height:
             calc(60vh - 55px)
     }
+
 
     body{
 
@@ -911,7 +1248,9 @@ button:active,
 
 <div class="top">
 
-<h1>temi camera</h1>
+<h1>
+    temi camera
+</h1>
 
 <span id="cam">
     connecting…
@@ -939,8 +1278,9 @@ button:active,
 
 <p class="hint">
 
-    Use the buttons or keyboard
-    to drive the robot.
+    Use the buttons, keyboard,
+    or a game controller to
+    drive the robot.
 
     Release the key/button
     to stop.
@@ -1002,9 +1342,9 @@ button:active,
 <div class="section">
 
 
-<h1>
+<h2>
     Controller
-</h1>
+</h2>
 
 
 <p class="hint">
@@ -1062,41 +1402,91 @@ button:active,
 </div>
 
 
-<div class="controller-key">
+</div>
 
-    D-pad ↑<br>
-
-    <b>Forward</b>
 
 </div>
 
 
-<div class="controller-key">
-
-    D-pad ↓<br>
-
-    <b>Backward</b>
-
-</div>
+<div class="section">
 
 
-<div class="controller-key">
-
-    D-pad ←<br>
-
-    <b>Left</b>
-
-</div>
+<h2>
+    Library configuration
+</h2>
 
 
-<div class="controller-key">
+<p class="hint">
 
-    D-pad →<br>
+    These settings belong to
+    this individual robot.
 
-    <b>Right</b>
+    They are stored locally and
+    survive normal application
+    updates.
 
-</div>
+</p>
 
+
+<label
+    class="config-label"
+    for="libraryWebsiteUrl">
+
+    Library / Finna page URL
+
+</label>
+
+
+<input
+    id="libraryWebsiteUrl"
+    class="config-input"
+    type="text"
+    autocomplete="off">
+
+
+<label
+    class="config-label"
+    for="libraryAlwaysFilter">
+
+    Finna building filter
+
+</label>
+
+
+<input
+    id="libraryAlwaysFilter"
+    class="config-input"
+    type="text"
+    autocomplete="off">
+
+
+<label
+    class="config-label"
+    for="libraryBranchName">
+
+    Library branch name
+
+</label>
+
+
+<input
+    id="libraryBranchName"
+    class="config-input"
+    type="text"
+    autocomplete="off">
+
+
+<button
+    id="saveLibraryConfig"
+    class="config-save">
+
+    Save library configuration
+
+</button>
+
+
+<div
+    id="libraryConfigStatus">
 
 </div>
 
@@ -1120,39 +1510,73 @@ button:active,
 <script>
 
 
-/*
- * Keyboard state.
- */
 const keys =
     new Set();
 
 
-let timer = 0;
+let timer =
+    0;
+
+
+let gamepad =
+    null;
+
+
+let controllerActive =
+    false;
+
+
+const DEADZONE =
+    0.15;
 
 
 /*
- * Connected game controller.
+ * Returns true when the user is currently
+ * typing into an editable field.
  */
-let gamepad = null;
+function isTypingTarget(
+    target
+){
+
+    if(
+        !target
+    ){
+
+        return false;
+    }
 
 
-/*
- * Whether controller movement
- * is currently active.
- */
-let controllerActive = false;
+    const tag =
+        target.tagName
+            ? target.tagName.toLowerCase()
+            : '';
 
 
-/*
- * Analog stick deadzone.
- */
-const DEADZONE = 0.15;
+    if(
+        tag === 'input' ||
+        tag === 'textarea' ||
+        tag === 'select'
+    ){
+
+        return true;
+    }
 
 
-/*
- * Apply controller deadzone.
- */
-function applyDeadzone(value){
+    if(
+        target.isContentEditable
+    ){
+
+        return true;
+    }
+
+
+    return false;
+}
+
+
+function applyDeadzone(
+    value
+){
 
     if(
         Math.abs(value) <
@@ -1171,29 +1595,17 @@ function applyDeadzone(value){
 
     return sign *
         (
-            (Math.abs(value) -
-                DEADZONE) /
-            (1 - DEADZONE)
+            (
+                Math.abs(value) -
+                DEADZONE
+            ) /
+            (
+                1 - DEADZONE
+            )
         );
 }
 
 
-/*
- * Keyboard/button movement.
- *
- * temi skidJoy:
- *
- * x = forward/backward
- * y = left/right
- *
- * W = x +1
- * S = x -1
- * A = y +1
- * D = y -1
- *
- * This intentionally makes A and D
- * use the reversed direction requested.
- */
 function send(){
 
     const x =
@@ -1218,20 +1630,22 @@ function send(){
 }
 
 
-/*
- * Begin keyboard/button movement.
- */
 function start(
     key,
     button
 ){
 
-    if(!button){
+    if(
+        !button
+    ){
+
         return;
     }
 
 
-    keys.add(key);
+    keys.add(
+        key
+    );
 
 
     button.classList.add(
@@ -1242,7 +1656,9 @@ function start(
     send();
 
 
-    clearInterval(timer);
+    clearInterval(
+        timer
+    );
 
 
     timer =
@@ -1253,18 +1669,19 @@ function start(
 }
 
 
-/*
- * End keyboard/button movement.
- */
 function end(
     key,
     button
 ){
 
-    keys.delete(key);
+    keys.delete(
+        key
+    );
 
 
-    if(button){
+    if(
+        button
+    ){
 
         button.classList.remove(
             'down'
@@ -1275,88 +1692,113 @@ function end(
     send();
 
 
-    if(!keys.size){
+    if(
+        !keys.size
+    ){
 
-        clearInterval(timer);
+        clearInterval(
+            timer
+        );
 
-        timer = 0;
+
+        timer =
+            0;
     }
 }
 
 
-/*
- * Touch/mouse buttons.
- */
 document
     .querySelectorAll(
         'button[data-key]'
     )
-    .forEach(button => {
+    .forEach(
+        button => {
 
-        const key =
-            button.dataset.key;
-
-
-        button.onpointerdown =
-            event => {
-
-                event.preventDefault();
-
-                start(
-                    key,
-                    button
-                );
-            };
+            const key =
+                button.dataset.key;
 
 
-        button.onpointerup =
-            event => {
+            button.onpointerdown =
+                event => {
 
-                event.preventDefault();
+                    event.preventDefault();
 
-                end(
-                    key,
-                    button
-                );
-            };
+                    start(
+                        key,
+                        button
+                    );
+                };
 
 
-        button.onpointercancel =
-            event => {
+            button.onpointerup =
+                event => {
 
-                event.preventDefault();
-
-                if(keys.has(key)){
+                    event.preventDefault();
 
                     end(
                         key,
                         button
                     );
-                }
-            };
+                };
 
 
-        button.onpointerleave =
-            () => {
+            button.onpointercancel =
+                event => {
 
-                if(keys.has(key)){
+                    event.preventDefault();
 
-                    end(
-                        key,
-                        button
-                    );
-                }
-            };
+                    if(
+                        keys.has(
+                            key
+                        )
+                    ){
 
-    });
+                        end(
+                            key,
+                            button
+                        );
+                    }
+                };
+
+
+            button.onpointerleave =
+                () => {
+
+                    if(
+                        keys.has(
+                            key
+                        )
+                    ){
+
+                        end(
+                            key,
+                            button
+                        );
+                    }
+                };
+        }
+    );
 
 
 /*
- * Keyboard W/A/S/D.
+ * Keyboard movement.
+ *
+ * W, A, S and D work normally inside
+ * text fields and do not control the robot.
  */
 addEventListener(
     'keydown',
     event => {
+
+        if(
+            isTypingTarget(
+                event.target
+            )
+        ){
+
+            return;
+        }
+
 
         const key =
             event.key.toLowerCase();
@@ -1368,7 +1810,9 @@ addEventListener(
                 'a',
                 's',
                 'd'
-            ].includes(key)
+            ].includes(
+                key
+            )
         ){
 
             return;
@@ -1378,7 +1822,12 @@ addEventListener(
         event.preventDefault();
 
 
-        if(keys.has(key)){
+        if(
+            keys.has(
+                key
+            )
+        ){
+
             return;
         }
 
@@ -1399,9 +1848,6 @@ addEventListener(
 );
 
 
-/*
- * Keyboard release.
- */
 addEventListener(
     'keyup',
     event => {
@@ -1416,7 +1862,19 @@ addEventListener(
                 'a',
                 's',
                 'd'
-            ].includes(key)
+            ].includes(
+                key
+            )
+        ){
+
+            return;
+        }
+
+
+        if(
+            !keys.has(
+                key
+            )
         ){
 
             return;
@@ -1442,64 +1900,103 @@ addEventListener(
 );
 
 
-/*
- * STOP button.
- */
-document
-    .getElementById('stop')
-    .onclick = () => {
+window.addEventListener(
+    'blur',
+    () => {
 
-        keys.clear();
+        if(
+            keys.size
+        ){
 
-
-        clearInterval(timer);
-
-        timer = 0;
+            keys.clear();
 
 
-        controllerActive =
-            false;
-
-
-        fetch(
-            '/api/stop',
-            {
-                method:'POST'
-            }
-        ).catch(()=>{});
-
-
-        document
-            .querySelectorAll(
-                '.down'
-            )
-            .forEach(
-                element =>
-                    element.classList.remove(
-                        'down'
-                    )
+            clearInterval(
+                timer
             );
-    };
 
 
-/*
- * Controller movement.
- *
- * Standard Gamepad API:
- *
- * axes[0] = left/right
- * axes[1] = up/down
- *
- * Most controllers:
- *
- * up   = -1
- * down = +1
- *
- * Therefore axes[1] is inverted.
- */
+            timer =
+                0;
+
+
+            fetch(
+                '/api/stop',
+                {
+                    method:'POST'
+                }
+            ).catch(()=>{});
+
+
+            document
+                .querySelectorAll(
+                    '.down'
+                )
+                .forEach(
+                    element => {
+
+                        element.classList.remove(
+                            'down'
+                        );
+                    }
+                );
+        }
+    }
+);
+
+
+document
+    .getElementById(
+        'stop'
+    )
+    .onclick =
+        () => {
+
+            keys.clear();
+
+
+            clearInterval(
+                timer
+            );
+
+
+            timer =
+                0;
+
+
+            controllerActive =
+                false;
+
+
+            fetch(
+                '/api/stop',
+                {
+                    method:'POST'
+                }
+            ).catch(()=>{});
+
+
+            document
+                .querySelectorAll(
+                    '.down'
+                )
+                .forEach(
+                    element => {
+
+                        element.classList.remove(
+                            'down'
+                        );
+                    }
+                );
+        };
+
+
 function sendController(){
 
-    if(!gamepad){
+    if(
+        !gamepad
+    ){
+
         return;
     }
 
@@ -1510,24 +2007,10 @@ function sendController(){
         );
 
 
-    /*
-     * A/D direction is intentionally
-     * reversed to match the keyboard.
-     */
     let turn =
         -applyDeadzone(
             gamepad.axes[0] || 0
         );
-
-
-    /*
-     * Standard Gamepad API D-pad:
-     *
-     * 12 = up
-     * 13 = down
-     * 14 = left
-     * 15 = right
-     */
 
 
     if(
@@ -1535,7 +2018,8 @@ function sendController(){
         gamepad.buttons[12].pressed
     ){
 
-        forward = 1;
+        forward =
+            1;
     }
 
 
@@ -1544,20 +2028,18 @@ function sendController(){
         gamepad.buttons[13].pressed
     ){
 
-        forward = -1;
+        forward =
+            -1;
     }
 
 
-    /*
-     * D-pad left/right are also
-     * intentionally reversed.
-     */
     if(
         gamepad.buttons[14] &&
         gamepad.buttons[14].pressed
     ){
 
-        turn = 1;
+        turn =
+            1;
     }
 
 
@@ -1566,19 +2048,21 @@ function sendController(){
         gamepad.buttons[15].pressed
     ){
 
-        turn = -1;
+        turn =
+            -1;
     }
 
 
-    /*
-     * Stick is centered.
-     */
     if(
-        Math.abs(forward) < 0.01 &&
-        Math.abs(turn) < 0.01
+        Math.abs(forward) <
+        0.01 &&
+        Math.abs(turn) <
+        0.01
     ){
 
-        if(controllerActive){
+        if(
+            controllerActive
+        ){
 
             controllerActive =
                 false;
@@ -1597,15 +2081,10 @@ function sendController(){
     }
 
 
-    controllerActive = true;
+    controllerActive =
+        true;
 
 
-    /*
-     * Send analog movement directly.
-     *
-     * x = forward/backward
-     * y = left/right
-     */
     fetch(
         '/api/move?x=' +
         forward +
@@ -1618,9 +2097,6 @@ function sendController(){
 }
 
 
-/*
- * Controller connected.
- */
 window.addEventListener(
     'gamepadconnected',
     event => {
@@ -1643,19 +2119,10 @@ window.addEventListener(
         status.classList.add(
             'controller-connected'
         );
-
-
-        console.log(
-            'Gamepad connected:',
-            gamepad.id
-        );
     }
 );
 
 
-/*
- * Controller disconnected.
- */
 window.addEventListener(
     'gamepaddisconnected',
     event => {
@@ -1666,7 +2133,8 @@ window.addEventListener(
             gamepad.index
         ){
 
-            gamepad = null;
+            gamepad =
+                null;
 
 
             controllerActive =
@@ -1699,9 +2167,6 @@ window.addEventListener(
 );
 
 
-/*
- * Poll controller state continuously.
- */
 function pollGamepad(){
 
     const pads =
@@ -1710,13 +2175,19 @@ function pollGamepad(){
             : [];
 
 
-    if(gamepad){
+    if(
+        gamepad
+    ){
 
         const updated =
-            pads[gamepad.index];
+            pads[
+                gamepad.index
+            ];
 
 
-        if(updated){
+        if(
+            updated
+        ){
 
             gamepad =
                 updated;
@@ -1733,11 +2204,6 @@ function pollGamepad(){
 }
 
 
-/*
- * Detect controllers that were
- * already connected before the
- * page loaded.
- */
 function findExistingGamepad(){
 
     if(
@@ -1758,7 +2224,9 @@ function findExistingGamepad(){
         i++
     ){
 
-        if(pads[i]){
+        if(
+            pads[i]
+        ){
 
             gamepad =
                 pads[i];
@@ -1791,12 +2259,158 @@ findExistingGamepad();
 pollGamepad();
 
 
-/*
- * Camera / robot status.
- */
+async function loadLibraryConfig(){
+
+    const status =
+        document.getElementById(
+            'libraryConfigStatus'
+        );
+
+
+    try {
+
+        const response =
+            await fetch(
+                '/api/library-config',
+                {
+                    cache:'no-store'
+                }
+            );
+
+
+        const config =
+            await response.json();
+
+
+        document
+            .getElementById(
+                'libraryWebsiteUrl'
+            )
+            .value =
+            config.websiteUrl || '';
+
+
+        document
+            .getElementById(
+                'libraryAlwaysFilter'
+            )
+            .value =
+            config.alwaysFilter || '';
+
+
+        document
+            .getElementById(
+                'libraryBranchName'
+            )
+            .value =
+            config.libraryBranchName || '';
+
+
+        status.textContent =
+            'Configuration loaded.';
+
+    } catch(
+        e
+    ) {
+
+        status.textContent =
+            'Could not load configuration: ' +
+            e.message;
+    }
+}
+
+
+document
+    .getElementById(
+        'saveLibraryConfig'
+    )
+    .addEventListener(
+        'click',
+        async () => {
+
+            const status =
+                document.getElementById(
+                    'libraryConfigStatus'
+                );
+
+
+            status.textContent =
+                'Saving...';
+
+
+            const params =
+                new URLSearchParams(
+                    {
+                        websiteUrl:
+                            document
+                                .getElementById(
+                                    'libraryWebsiteUrl'
+                                )
+                                .value,
+
+                        alwaysFilter:
+                            document
+                                .getElementById(
+                                    'libraryAlwaysFilter'
+                                )
+                                .value,
+
+                        libraryBranchName:
+                            document
+                                .getElementById(
+                                    'libraryBranchName'
+                                )
+                                .value
+                    }
+                );
+
+
+            try {
+
+                const response =
+                    await fetch(
+                        '/api/library-config?' +
+                        params.toString(),
+                        {
+                            method:'POST'
+                        }
+                    );
+
+
+                const result =
+                    await response.json();
+
+
+                if(
+                    !response.ok ||
+                    !result.ok
+                ){
+
+                    throw new Error(
+                        result.error ||
+                        'Save failed'
+                    );
+                }
+
+
+                status.textContent =
+                    'Saved successfully.';
+
+            } catch(
+                e
+            ) {
+
+                status.textContent =
+                    'Save failed: ' +
+                    e.message;
+            }
+        }
+    );
+
+
 async function status(){
 
-    try{
+    try {
 
         const response =
             await fetch(
@@ -1812,7 +2426,9 @@ async function status(){
 
 
         document
-            .getElementById('cam')
+            .getElementById(
+                'cam'
+            )
             .textContent =
             s.camera
                 ? 'live'
@@ -1820,7 +2436,9 @@ async function status(){
 
 
         document
-            .getElementById('status')
+            .getElementById(
+                'status'
+            )
             .textContent =
             'LAN: http://' +
             s.ip +
@@ -1833,16 +2451,21 @@ async function status(){
                     : 'unavailable'
             );
 
-
-    } catch(e){
+    } catch(
+        e
+    ) {
 
         document
-            .getElementById('cam')
+            .getElementById(
+                'cam'
+            )
             .textContent =
             'connection error';
     }
 }
 
+
+loadLibraryConfig();
 
 status();
 
@@ -1854,8 +2477,9 @@ setInterval(
 
 </script>
 
+
 </body>
 
 </html>
-"""
+        """.trimIndent()
 }
