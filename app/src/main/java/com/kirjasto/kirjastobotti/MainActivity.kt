@@ -1,7 +1,9 @@
 package com.kirjasto.kirjastobotti
 
 import android.annotation.SuppressLint
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -40,6 +42,10 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var robot: Robot
     private lateinit var webView: WebView
+
+    // LAN admin panel / remote driving
+    private lateinit var cameraStreamer: CameraStreamer
+    private lateinit var adminServer: AdminServer
 
     /*
      * Main navigation / training overlay.
@@ -107,6 +113,9 @@ class MainActivity : ComponentActivity() {
 
         private const val SETTINGS_PERMISSION_REQUEST_CODE =
             1001
+
+        private const val CAMERA_PERMISSION_REQUEST_CODE =
+            1002
 
 
         private const val TABLET_UP_ANGLE = 55
@@ -1220,6 +1229,17 @@ class MainActivity : ComponentActivity() {
         robot =
             Robot.getInstance()
 
+        // Start the LAN admin panel. It is intentionally hosted by the temi
+        // tablet itself, so another device on the same LAN can open it.
+        cameraStreamer = CameraStreamer(this)
+        adminServer = AdminServer(robot, cameraStreamer)
+        adminServer.start()
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            cameraStreamer.start()
+        } else {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST_CODE)
+        }
+
 
         shelfDatabase =
             ShelfDatabase(this)
@@ -1242,6 +1262,20 @@ class MainActivity : ComponentActivity() {
         createScreen()
 
         setupBackNavigation()
+    }
+
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE &&
+            grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+        ) {
+            cameraStreamer.start()
+        }
     }
 
 
@@ -3474,6 +3508,9 @@ class MainActivity : ComponentActivity() {
     // =========================================================
 
     override fun onDestroy() {
+
+        try { adminServer.stop() } catch (_: Exception) {}
+        try { cameraStreamer.stop() } catch (_: Exception) {}
 
         try {
 

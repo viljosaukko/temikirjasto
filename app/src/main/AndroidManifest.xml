@@ -2,7 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Network access for the LAN admin panel -->
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Android camera permission -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- temi has a camera, but don't require camera hardware for installation -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -14,6 +23,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Kirjastobotti">
 
+        <!-- REQUIRED BY TEMI -->
         <meta-data
             android:name="com.robotemi.sdk.metadata.SKILL"
             android:value="@string/app_name" />
