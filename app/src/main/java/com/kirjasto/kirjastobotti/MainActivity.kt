@@ -1907,7 +1907,7 @@ class MainActivity : ComponentActivity() {
 
         assistanceYesButton =
             createButton(
-                "KYLLÄ, TARVITSEN APUA"
+                "KYLLÄ, TARVITSEN AVUSTUSTA"
             )
 
 
