@@ -48,6 +48,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var cameraStreamer: CameraStreamer
     private lateinit var adminServer: AdminServer
 
+    private lateinit var appUpdater: AppUpdater
+
     /*
      * Main navigation / training overlay.
      */
@@ -1206,6 +1208,9 @@ class MainActivity : ComponentActivity() {
 
         adminServer.start()
 
+        appUpdater =
+            AppUpdater(this)
+
 
         if (
             checkSelfPermission(
@@ -1247,6 +1252,8 @@ class MainActivity : ComponentActivity() {
 
         createScreen()
 
+        appUpdater.checkForUpdate()
+
         setupBackNavigation()
     }
 
@@ -1283,6 +1290,13 @@ class MainActivity : ComponentActivity() {
         disableTemiNavigationBillboard()
 
         hideTemiUI()
+
+        if (
+            ::appUpdater.isInitialized
+        ) {
+
+            appUpdater.resumePendingInstallIfPossible()
+        }
     }
 
 
