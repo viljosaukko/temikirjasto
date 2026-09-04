@@ -38,7 +38,8 @@ import kotlin.math.abs
 class AdminServer(
     private val context: Context,
     private val robot: Robot,
-    private val camera: CameraStreamer
+    private val camera: CameraStreamer,
+    private val usageRepository: UsageRepository
 ) {
 
     private val libraryConfig =
@@ -372,6 +373,37 @@ class AdminServer(
                             }
                             """.trimIndent()
 
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            json,
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+
+                    /*
+                     * Book request usage data.
+                     */
+                    method == "GET" &&
+                            target == "/api/usage" -> {
+
+                        val usage =
+                            usageRepository.snapshot()
+
+                        val errors =
+                            usage.errors.joinToString(",") { error ->
+                                "{\"message\":\"${jsonEscape(error.message)}\",\"count\":${error.count}}"
+                            }
+
+                        val json =
+                            "{" +
+                                    "\"requestsToday\":${usage.requestsToday}," +
+                                    "\"requestsAllTime\":${usage.requestsAllTime}," +
+                                    "\"failedRequests\":${usage.failedRequests}," +
+                                    "\"errors\":[$errors]" +
+                                    "}"
 
                         writeText(
                             it.getOutputStream(),
@@ -1215,6 +1247,90 @@ button:active,
 }
 
 
+.tabs{
+
+    display:grid;
+
+    grid-template-columns:1fr 1fr;
+
+    gap:8px;
+
+    margin-bottom:18px
+}
+
+
+.tab{
+
+    padding:10px;
+
+    font-size:14px
+}
+
+
+.tab-active{
+
+    background:#345a78
+}
+
+
+.panel-hidden{
+
+    display:none
+}
+
+
+.usage-grid{
+
+    display:grid;
+
+    grid-template-columns:1fr 1fr;
+
+    gap:10px;
+
+    margin-top:14px
+}
+
+
+.usage-stat{
+
+    padding:12px;
+
+    border:1px solid #283442;
+
+    border-radius:10px;
+
+    background:#0e141b
+}
+
+
+.usage-stat strong{
+
+    display:block;
+
+    font-size:24px
+}
+
+
+.usage-stat span{
+
+    color:#9aa7b5;
+
+    font-size:12px
+}
+
+
+#usageErrors{
+
+    margin-top:14px;
+
+    color:#c7d0da;
+
+    font-size:13px;
+
+    line-height:1.5
+}
+
+
 #updateStatus{
 
     margin-top:10px;
@@ -1302,6 +1418,31 @@ button:active,
 
 
 <section class="card controls">
+
+
+<div class="tabs">
+
+<button
+    class="tab tab-active"
+    id="driveTab">
+
+    Manual drive
+
+</button>
+
+
+<button
+    class="tab"
+    id="usageTab">
+
+    Usage data
+
+</button>
+
+</div>
+
+
+<div id="drivePanel">
 
 
 <h1>
@@ -1538,6 +1679,58 @@ button:active,
 
 </div>
 
+
+</div>
+
+
+</div>
+
+
+<div id="usagePanel" class="panel-hidden">
+
+
+<h1>
+    Usage data
+</h1>
+
+
+<p class="hint">
+    Book shelf requests stored on this robot.
+</p>
+
+
+<div class="usage-grid">
+
+<div class="usage-stat">
+    <strong id="requestsToday">0</strong>
+    <span>Requests today</span>
+</div>
+
+
+<div class="usage-stat">
+    <strong id="requestsAllTime">0</strong>
+    <span>Requests all time</span>
+</div>
+
+
+<div class="usage-stat">
+    <strong id="failedRequests">0</strong>
+    <span>Failed requests</span>
+</div>
+
+</div>
+
+
+<div class="section">
+
+<h2>Errors</h2>
+
+<div id="usageErrors">No errors recorded.</div>
+
+</div>
+
+
+<div id="usageStatus" class="hint"></div>
 
 </div>
 
@@ -2305,6 +2498,89 @@ function findExistingGamepad(){
 findExistingGamepad();
 
 pollGamepad();
+
+
+function showPanel(
+    panel,
+    tab
+){
+
+    document
+        .getElementById('drivePanel')
+        .classList.toggle(
+            'panel-hidden',
+            panel !== 'drive'
+        );
+
+    document
+        .getElementById('usagePanel')
+        .classList.toggle(
+            'panel-hidden',
+            panel !== 'usage'
+        );
+
+    document
+        .querySelectorAll('.tab')
+        .forEach(element => element.classList.remove('tab-active'));
+
+    document
+        .getElementById(tab)
+        .classList.add('tab-active');
+}
+
+
+async function loadUsage(){
+
+    const status =
+        document.getElementById('usageStatus');
+
+    try {
+
+        const response =
+            await fetch('/api/usage', { cache:'no-store' });
+
+        if (!response.ok) {
+            throw new Error('Could not load usage data');
+        }
+
+        const usage = await response.json();
+
+        document.getElementById('requestsToday').textContent =
+            usage.requestsToday || 0;
+        document.getElementById('requestsAllTime').textContent =
+            usage.requestsAllTime || 0;
+        document.getElementById('failedRequests').textContent =
+            usage.failedRequests || 0;
+
+        const errors = document.getElementById('usageErrors');
+        errors.replaceChildren();
+
+        if (!usage.errors || !usage.errors.length) {
+            errors.textContent = 'No errors recorded.';
+        } else {
+            usage.errors.forEach(error => {
+                const row = document.createElement('div');
+                row.textContent = error.count + ' × ' + error.message;
+                errors.appendChild(row);
+            });
+        }
+
+        status.textContent = 'Updated just now.';
+    } catch (error) {
+        status.textContent = 'Could not load usage data: ' + error.message;
+    }
+}
+
+
+document.getElementById('driveTab').addEventListener('click', () => {
+    showPanel('drive', 'driveTab');
+});
+
+
+document.getElementById('usageTab').addEventListener('click', () => {
+    showPanel('usage', 'usageTab');
+    loadUsage();
+});
 
 
 async function loadLibraryConfig(){

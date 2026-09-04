@@ -11,6 +11,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.webkit.JavascriptInterface
@@ -93,6 +94,8 @@ class MainActivity : ComponentActivity() {
      * Persistent local shelf database.
      */
     private lateinit var shelfDatabase: ShelfDatabase
+
+    private lateinit var usageRepository: UsageRepository
 
 
     companion object {
@@ -1138,6 +1141,10 @@ class MainActivity : ComponentActivity() {
                     OnGoToLocationStatusChangedListener.ABORT
                 ) {
 
+                    if (goingToShelf) {
+                        usageRepository.recordFailure(description)
+                    }
+
                     goingToShelf =
                         false
 
@@ -1191,6 +1198,9 @@ class MainActivity : ComponentActivity() {
         libraryConfig =
             LibraryConfig(this)
 
+        usageRepository =
+            UsageRepository(this)
+
 
         robot =
             Robot.getInstance()
@@ -1203,7 +1213,8 @@ class MainActivity : ComponentActivity() {
             AdminServer(
                 this,
                 robot,
-                cameraStreamer
+                cameraStreamer,
+                usageRepository
             )
 
         adminServer.start()
@@ -1932,7 +1943,7 @@ class MainActivity : ComponentActivity() {
 
         assistanceYesButton =
             createButton(
-                "KYLLÄ, TARVITSEN AVUSTUSTA"
+                "KYLLÄ, TARVITSEN VIELÄ AVUSTUSTA"
             )
 
 
@@ -2119,36 +2130,53 @@ class MainActivity : ComponentActivity() {
         shelf: String
     ) {
 
-        val savedPosition =
-            shelfDatabase.get(
-                shelf
+        if (shelf.isBlank()) {
+            usageRepository.recordRequest(
+                success = false,
+                error = "Hyllytunniste puuttuu"
             )
-
-
-        if (
-            savedPosition != null
-        ) {
-
-            Toast.makeText(
-                this,
-                "Hylly löytyy tietokannasta.",
-                Toast.LENGTH_SHORT
-            ).show()
-
-
-            goToSavedShelf(
-                shelf,
-                savedPosition
-            )
-
-
             return
         }
 
+        try {
+            val savedPosition =
+                shelfDatabase.get(
+                    shelf
+                )
 
-        startShelfTeaching(
-            shelf
-        )
+            if (
+                savedPosition != null
+            ) {
+
+                Toast.makeText(
+                    this,
+                    "Hylly löytyy tietokannasta.",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+
+                goToSavedShelf(
+                    shelf,
+                    savedPosition
+                )
+
+
+                usageRepository.recordRequest(success = true)
+                return
+            }
+
+
+            startShelfTeaching(
+                shelf
+            )
+            usageRepository.recordRequest(success = true)
+        } catch (exception: Exception) {
+            usageRepository.recordRequest(
+                success = false,
+                error = exception.message ?: exception.javaClass.simpleName
+            )
+            Log.e("Kirjastobotti", "Shelf request failed", exception)
+        }
     }
 
 
