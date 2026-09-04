@@ -7,8 +7,11 @@ This app now supports a GitHub Releases based updater.
 - The app checks this manifest URL on startup:
   - `https://github.com/viljosaukko/temikirjasto/releases/latest/download/update.json`
 - The manifest tells the app the latest `versionCode`, `versionName`, APK URL, and optional SHA-256 checksum.
-- If the manifest version is newer than the installed app, the app shows an update dialog.
+- If the manifest version is newer than the installed app, the app shows `Update found. Updating...` and immediately starts the download/install flow.
 - The APK is downloaded to the app cache, verified if a SHA-256 is provided, and then launched in the Android package installer.
+- The admin panel includes a manual `Check for updates now` button that triggers the same update checker and updater.
+
+Note: Android may still show its package-installer confirmation screen if the device requires it for APK installation.
 
 ## Release format
 

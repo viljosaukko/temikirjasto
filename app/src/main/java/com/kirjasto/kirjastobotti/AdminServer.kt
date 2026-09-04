@@ -383,6 +383,29 @@ class AdminServer(
 
 
                     /*
+                     * Trigger a manual update check.
+                     */
+                    method == "POST" &&
+                            target == "/api/update-check" -> {
+
+                        (context as? MainActivity)
+                            ?.triggerUpdateCheck()
+
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            """
+                            {
+                                "ok":true
+                            }
+                            """.trimIndent(),
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+
+                    /*
                      * Get library configuration.
                      */
                     method == "GET" &&
@@ -1192,6 +1215,16 @@ button:active,
 }
 
 
+#updateStatus{
+
+    margin-top:10px;
+
+    font-size:13px;
+
+    color:#9aa7b5
+}
+
+
 #libraryConfigStatus{
 
     margin-top:10px;
@@ -1485,8 +1518,23 @@ button:active,
 </button>
 
 
+<button
+    id="checkUpdates"
+    class="config-save">
+
+    Check for updates now
+
+</button>
+
+
 <div
     id="libraryConfigStatus">
+
+</div>
+
+
+<div
+    id="updateStatus">
 
 </div>
 
@@ -2402,6 +2450,66 @@ document
 
                 status.textContent =
                     'Save failed: ' +
+                    e.message;
+            }
+        }
+    );
+
+
+document
+    .getElementById(
+        'checkUpdates'
+    )
+    .addEventListener(
+        'click',
+        async () => {
+
+            const status =
+                document.getElementById(
+                    'updateStatus'
+                );
+
+
+            status.textContent =
+                'Checking for updates...';
+
+
+            try {
+
+                const response =
+                    await fetch(
+                        '/api/update-check',
+                        {
+                            method:'POST'
+                        }
+                    );
+
+
+                const result =
+                    await response.json();
+
+
+                if(
+                    !response.ok ||
+                    !result.ok
+                ){
+
+                    throw new Error(
+                        result.error ||
+                        'Update check failed'
+                    );
+                }
+
+
+                status.textContent =
+                    'Update check started.';
+
+            } catch(
+                e
+            ) {
+
+                status.textContent =
+                    'Update check failed: ' +
                     e.message;
             }
         }

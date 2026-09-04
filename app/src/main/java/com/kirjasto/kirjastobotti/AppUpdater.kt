@@ -1,6 +1,5 @@
 package com.kirjasto.kirjastobotti
 
-import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -19,6 +18,10 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 
 import kotlin.math.max
@@ -43,8 +46,12 @@ object UpdateConfig {
         "kirjastobotti_updater"
 
 
-    const val PREF_LAST_PROMPTED_VERSION =
-        "last_prompted_version"
+    const val PREF_LAST_KNOWN_VERSION_CODE =
+        "last_known_version_code"
+
+
+    const val PREF_LAST_SUCCESSFUL_UPDATE_DATE =
+        "last_successful_update_date"
 }
 
 
@@ -67,9 +74,65 @@ class AppUpdater(
         Handler(Looper.getMainLooper())
 
 
+    private val dateFormatter =
+        SimpleDateFormat(
+            "yyyy-MM-dd",
+            Locale.US
+        )
+
+
     @Volatile
     private var pendingInstallFile: File? =
         null
+
+
+    @Volatile
+    private var dailyCheckRunnable: Runnable? =
+        null
+
+
+    fun startAutomaticUpdateChecks() {
+
+        recordSuccessfulUpdateIfVersionChanged()
+
+        if (
+            shouldCheckForUpdateToday()
+        ) {
+
+            val now =
+                Calendar.getInstance()
+
+
+            if (
+                now.get(
+                    Calendar.HOUR_OF_DAY
+                ) >= 8
+            ) {
+
+                checkForUpdate()
+
+            } else {
+
+                scheduleNextDailyUpdateCheck()
+            }
+
+        } else {
+
+            scheduleNextDailyUpdateCheck()
+        }
+    }
+
+
+    fun stopAutomaticUpdateChecks() {
+
+        dailyCheckRunnable?.let {
+
+            mainHandler.removeCallbacks(it)
+        }
+
+
+        dailyCheckRunnable = null
+    }
 
 
     fun checkForUpdate() {
@@ -89,26 +152,17 @@ class AppUpdater(
             }
 
 
-            val lastPromptedVersion =
-                preferences.getInt(
-                    UpdateConfig.PREF_LAST_PROMPTED_VERSION,
-                    0
-                )
-
-
-            if (
-                update.versionCode <=
-                lastPromptedVersion
-            ) {
-                return@execute
-            }
-
-
             mainHandler.post {
 
-                showUpdateDialog(update)
+                startUpdate(update)
             }
         }
+    }
+
+
+    fun shouldCheckForUpdateToday(): Boolean {
+
+        return lastSuccessfulUpdateDate() != todayKey()
     }
 
 
@@ -124,6 +178,146 @@ class AppUpdater(
         ) {
             installUpdate(file)
         }
+    }
+
+
+    private fun scheduleNextDailyUpdateCheck() {
+
+        val existingRunnable =
+            dailyCheckRunnable
+
+
+        if (
+            existingRunnable != null
+        ) {
+
+            mainHandler.removeCallbacks(existingRunnable)
+        }
+
+
+        val now =
+            Calendar.getInstance()
+
+
+        val nextRun =
+            Calendar.getInstance().apply {
+
+                set(
+                    Calendar.HOUR_OF_DAY,
+                    8
+                )
+                set(
+                    Calendar.MINUTE,
+                    0
+                )
+                set(
+                    Calendar.SECOND,
+                    0
+                )
+                set(
+                    Calendar.MILLISECOND,
+                    0
+                )
+
+                if (
+                    !after(now)
+                ) {
+
+                    add(
+                        Calendar.DAY_OF_YEAR,
+                        1
+                    )
+                }
+            }
+
+
+        val runnable =
+            Runnable {
+
+                if (
+                    shouldCheckForUpdateToday()
+                ) {
+
+                    checkForUpdate()
+                }
+
+
+                scheduleNextDailyUpdateCheck()
+            }
+
+
+        dailyCheckRunnable =
+            runnable
+
+
+        mainHandler.postDelayed(
+            runnable,
+            nextRun.timeInMillis - now.timeInMillis
+        )
+    }
+
+
+    private fun recordSuccessfulUpdateIfVersionChanged() {
+
+        val storedVersionCode =
+            preferences.getInt(
+                UpdateConfig.PREF_LAST_KNOWN_VERSION_CODE,
+                0
+            )
+
+
+        if (
+            storedVersionCode == 0
+        ) {
+
+            preferences.edit()
+                .putInt(
+                    UpdateConfig.PREF_LAST_KNOWN_VERSION_CODE,
+                    BuildConfig.VERSION_CODE
+                )
+                .apply()
+
+
+            return
+        }
+
+
+        if (
+            storedVersionCode ==
+            BuildConfig.VERSION_CODE
+        ) {
+
+            return
+        }
+
+
+        preferences.edit()
+            .putInt(
+                UpdateConfig.PREF_LAST_KNOWN_VERSION_CODE,
+                BuildConfig.VERSION_CODE
+            )
+            .putString(
+                UpdateConfig.PREF_LAST_SUCCESSFUL_UPDATE_DATE,
+                todayKey()
+            )
+            .apply()
+    }
+
+
+    private fun lastSuccessfulUpdateDate(): String {
+
+        return preferences.getString(
+            UpdateConfig.PREF_LAST_SUCCESSFUL_UPDATE_DATE,
+            ""
+        ).orEmpty()
+    }
+
+
+    private fun todayKey(): String {
+
+        return dateFormatter.format(
+            Date()
+        )
     }
 
 
@@ -208,7 +402,7 @@ class AppUpdater(
     }
 
 
-    private fun showUpdateDialog(
+    private fun startUpdate(
         update: UpdateInfo
     ) {
 
@@ -220,53 +414,14 @@ class AppUpdater(
         }
 
 
-        preferences.edit()
-            .putInt(
-                UpdateConfig.PREF_LAST_PROMPTED_VERSION,
-                update.versionCode
-            )
-            .apply()
+        Toast.makeText(
+            activity,
+            "Update found. Updating...",
+            Toast.LENGTH_LONG
+        ).show()
 
 
-        val message =
-            buildString {
-
-                append(
-                    "Uusi versio on saatavilla."
-                )
-
-                appendLine()
-                appendLine()
-                append(
-                    "Nykyinen: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
-                )
-                appendLine()
-                append(
-                    "Uusi: ${update.versionName} (${update.versionCode})"
-                )
-
-                if (
-                    update.notes.isNotBlank()
-                ) {
-                    appendLine()
-                    appendLine()
-                    append(update.notes)
-                }
-            }
-
-
-        AlertDialog.Builder(activity)
-            .setTitle("Päivitys")
-            .setMessage(message)
-            .setCancelable(false)
-            .setNegativeButton("Myöhemmin") { dialog, _ ->
-                dialog.dismiss()
-            }
-            .setPositiveButton("Päivitä") { dialog, _ ->
-                dialog.dismiss()
-                downloadAndInstall(update)
-            }
-            .show()
+        downloadAndInstall(update)
     }
 
 

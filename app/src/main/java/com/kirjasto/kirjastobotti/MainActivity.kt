@@ -1252,7 +1252,7 @@ class MainActivity : ComponentActivity() {
 
         createScreen()
 
-        appUpdater.checkForUpdate()
+        appUpdater.startAutomaticUpdateChecks()
 
         setupBackNavigation()
     }
@@ -1296,6 +1296,17 @@ class MainActivity : ComponentActivity() {
         ) {
 
             appUpdater.resumePendingInstallIfPossible()
+        }
+    }
+
+
+    fun triggerUpdateCheck() {
+
+        if (
+            ::appUpdater.isInitialized
+        ) {
+
+            appUpdater.checkForUpdate()
         }
     }
 
@@ -3450,6 +3461,14 @@ class MainActivity : ComponentActivity() {
     // =========================================================
 
     override fun onDestroy() {
+
+        try {
+            appUpdater.stopAutomaticUpdateChecks()
+        } catch (
+            _: Exception
+        ) {
+        }
+
 
         try {
             adminServer.stop()
