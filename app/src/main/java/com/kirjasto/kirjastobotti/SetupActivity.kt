@@ -46,6 +46,7 @@ class SetupActivity : ComponentActivity() {
 @Composable
 fun SetupScreen(repo: ShelfRepository) {
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     var detected by remember { mutableStateOf<List<Shelf>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
 
@@ -116,6 +117,19 @@ fun SetupScreen(repo: ShelfRepository) {
                 }
             }) {
                 Text("Save accepted shelves as draft")
+            }
+
+            Button(onClick = {
+                AlertDialog.Builder(context as android.app.Activity)
+                    .setTitle("Cancel setup?")
+                    .setMessage("This will close Setup Mode without saving current changes.")
+                    .setPositiveButton("Cancel setup") { _, _ ->
+                        (context as android.app.Activity).finish()
+                    }
+                    .setNegativeButton("Stay", null)
+                    .show()
+            }) {
+                Text("Cancel")
             }
         }
 

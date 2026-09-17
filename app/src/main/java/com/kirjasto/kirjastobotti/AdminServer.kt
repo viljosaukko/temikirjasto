@@ -6,8 +6,8 @@ import android.util.Log
 import com.robotemi.sdk.Robot
 
 import java.io.BufferedInputStream
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.File
+import java.io.IOException
 import java.io.OutputStream
 
 import java.net.InetAddress
@@ -53,6 +53,12 @@ class AdminServer(
 
         const val PORT =
             8080
+
+        private const val MAX_SETUP_UPLOAD_BYTES =
+            25 * 1024 * 1024
+
+        private const val MAX_SETUP_IMAGE_UPLOAD_BYTES =
+            10 * 1024 * 1024
     }
 
 
@@ -259,36 +265,42 @@ class AdminServer(
                     5000
 
 
-                val reader =
-                    BufferedReader(
-                        InputStreamReader(
-                            BufferedInputStream(
-                                it.getInputStream()
-                            ),
-                            StandardCharsets.UTF_8
-                        )
+                val input =
+                    BufferedInputStream(
+                        it.getInputStream()
                     )
 
 
                 val requestLine =
-                    reader.readLine()
+                    readAsciiLine(input)
                         ?: return
 
 
-                while (
-                    true
-                ) {
+                val headers =
+                    mutableMapOf<String, String>()
 
+                while (true) {
                     val line =
-                        reader.readLine()
+                        readAsciiLine(input)
                             ?: break
 
-
-                    if (
-                        line.isEmpty()
-                    ) {
+                    if (line.isEmpty()) {
                         break
                     }
+
+                    val idx = line.indexOf(':')
+                    if (idx <= 0) continue
+
+                    val key =
+                        line.substring(0, idx)
+                            .trim()
+                            .lowercase()
+
+                    val value =
+                        line.substring(idx + 1)
+                            .trim()
+
+                    headers[key] = value
                 }
 
 
@@ -343,6 +355,49 @@ class AdminServer(
                             ""
                         )
                     )
+
+                val contentLength =
+                    headers["content-length"]
+                        ?.toIntOrNull()
+                        ?: 0
+
+                val isSetupZipUpload =
+                    method == "POST" &&
+                            target == "/api/setup-upload-zip"
+
+                val isSetupImageUpload =
+                    method == "POST" &&
+                            target == "/api/setup-upload-image"
+
+                val isSetupBinaryUpload =
+                    isSetupZipUpload || isSetupImageUpload
+
+                if (isSetupZipUpload && contentLength > MAX_SETUP_UPLOAD_BYTES) {
+                    writeText(
+                        it.getOutputStream(),
+                        413,
+                        "{" + "\"ok\":false,\"error\":\"zip file too large\"}",
+                        "application/json; charset=utf-8"
+                    )
+                    return
+                }
+
+                if (isSetupImageUpload && contentLength > MAX_SETUP_IMAGE_UPLOAD_BYTES) {
+                    writeText(
+                        it.getOutputStream(),
+                        413,
+                        "{" + "\"ok\":false,\"error\":\"image file too large\"}",
+                        "application/json; charset=utf-8"
+                    )
+                    return
+                }
+
+                val bodyBytes =
+                    if (isSetupBinaryUpload && contentLength > 0) {
+                        readRequestBody(input, contentLength)
+                    } else {
+                        ByteArray(0)
+                    }
 
 
                 when {
@@ -494,6 +549,167 @@ class AdminServer(
                            """.trimIndent(),
                            "application/json; charset=utf-8"
                        )
+                    }
+
+                    /*
+                     * Upload a setup ZIP from admin panel and import images for setup mode.
+                     */
+                    method == "POST" &&
+                            target == "/api/setup-upload-zip" -> {
+
+                        val pin = query["pin"]?.trim().orEmpty()
+                        val main = context as? MainActivity
+
+                        if (main == null || !main.isSetupPinValid(pin)) {
+                            writeText(
+                                it.getOutputStream(),
+                                403,
+                                "{" + "\"ok\":false,\"error\":\"invalid pin\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        if (bodyBytes.isEmpty()) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"request body is empty\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val requestedName =
+                            query["filename"]
+                                ?.trim()
+                                .orEmpty()
+
+                        val safeFileName =
+                            sanitizeUploadFileName(
+                                if (requestedName.isBlank()) "kuvat.zip" else requestedName
+                            )
+
+                        if (!safeFileName.lowercase().endsWith(".zip")) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"filename must end with .zip\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val uploadDir = File(context.filesDir, "setup_uploads")
+                        if (!uploadDir.exists() && !uploadDir.mkdirs()) {
+                            writeText(
+                                it.getOutputStream(),
+                                500,
+                                "{" + "\"ok\":false,\"error\":\"could not create upload directory\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val zipFile = File(uploadDir, safeFileName)
+                        zipFile.writeBytes(bodyBytes)
+
+                        val imported =
+                            ShelfRepository(context)
+                                .importZip(zipFile.absolutePath)
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{" +
+                                    "\"ok\":true," +
+                                    "\"importedCount\":${imported.size}" +
+                                    "}",
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+                    /*
+                     * Upload a single setup photo image from admin panel.
+                     */
+                    method == "POST" &&
+                            target == "/api/setup-upload-image" -> {
+
+                        val pin = query["pin"]?.trim().orEmpty()
+                        val main = context as? MainActivity
+
+                        if (main == null || !main.isSetupPinValid(pin)) {
+                            writeText(
+                                it.getOutputStream(),
+                                403,
+                                "{" + "\"ok\":false,\"error\":\"invalid pin\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        if (bodyBytes.isEmpty()) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"request body is empty\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val requestedName =
+                            query["filename"]
+                                ?.trim()
+                                .orEmpty()
+
+                        val safeFileName =
+                            sanitizeUploadFileName(
+                                if (requestedName.isBlank()) {
+                                    "setup_${System.currentTimeMillis()}.jpg"
+                                } else {
+                                    requestedName
+                                }
+                            )
+
+                        val lowerName = safeFileName.lowercase()
+                        val allowed = lowerName.endsWith(".jpg")
+                                || lowerName.endsWith(".jpeg")
+                                || lowerName.endsWith(".png")
+                                || lowerName.endsWith(".webp")
+                        if (!allowed) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"unsupported image extension\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val imagesDir = File(context.filesDir, "shelf_images")
+                        if (!imagesDir.exists() && !imagesDir.mkdirs()) {
+                            writeText(
+                                it.getOutputStream(),
+                                500,
+                                "{" + "\"ok\":false,\"error\":\"could not create image directory\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val imageFile = File(imagesDir, safeFileName)
+                        imageFile.writeBytes(bodyBytes)
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{" +
+                                    "\"ok\":true," +
+                                    "\"file\":\"${jsonEscape(imageFile.name)}\"" +
+                                    "}",
+                            "application/json; charset=utf-8"
+                        )
                     }
 
                     /*
@@ -891,6 +1107,70 @@ class AdminServer(
     }
 
 
+    private fun readAsciiLine(
+        input: BufferedInputStream
+    ): String? {
+        val bytes = mutableListOf<Byte>()
+
+        while (true) {
+            val raw = input.read()
+            if (raw == -1) {
+                return if (bytes.isEmpty()) null else bytes.toByteArray().toString(StandardCharsets.US_ASCII)
+            }
+
+            val b = raw.toByte()
+            if (b == '\n'.code.toByte()) {
+                break
+            }
+
+            if (b != '\r'.code.toByte()) {
+                bytes.add(b)
+            }
+        }
+
+        return bytes.toByteArray()
+            .toString(StandardCharsets.US_ASCII)
+    }
+
+
+    private fun readRequestBody(
+        input: BufferedInputStream,
+        contentLength: Int
+    ): ByteArray {
+        if (contentLength < 0) {
+            throw IOException("Invalid content-length")
+        }
+
+        val body = ByteArray(contentLength)
+        var offset = 0
+        while (offset < contentLength) {
+            val read = input.read(body, offset, contentLength - offset)
+            if (read < 0) {
+                throw IOException("Unexpected end of request body")
+            }
+            offset += read
+        }
+        return body
+    }
+
+
+    private fun sanitizeUploadFileName(
+        original: String
+    ): String {
+        val stripped =
+            original
+                .replace("\\", "/")
+                .substringAfterLast('/')
+                .trim()
+
+        val cleaned =
+            stripped
+                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+
+        return cleaned.ifBlank { "kuvat.zip" }
+    }
+
+
     private fun writeText(
         out: OutputStream,
         status: Int,
@@ -915,6 +1195,12 @@ class AdminServer(
 
                 400 ->
                     "Bad Request"
+
+                403 ->
+                    "Forbidden"
+
+                413 ->
+                    "Payload Too Large"
 
                 404 ->
                     "Not Found"
@@ -1797,8 +2083,57 @@ button:active,
     Change setup PIN
  
 </button>
+
+<label
+    class="config-label"
+    for="setupZipFile"
+    style="margin-top:12px">
  
+    Setup photos ZIP (.zip)
  
+</label>
+
+<input
+    id="setupZipFile"
+    class="config-input"
+    type="file"
+    accept=".zip,application/zip,application/x-zip-compressed">
+
+<button
+    id="uploadSetupZip"
+    class="config-save"
+    style="margin-top:10px;background:#2f6b3f">
+ 
+    Upload setup photos ZIP
+ 
+</button>
+
+<label
+    class="config-label"
+    for="setupPhotoFiles"
+    style="margin-top:12px">
+ 
+    Setup photos (JPG/PNG/WEBP, multiple)
+ 
+</label>
+
+<input
+    id="setupPhotoFiles"
+    class="config-input"
+    type="file"
+    accept="image/jpeg,image/png,image/webp"
+    multiple>
+
+<button
+    id="uploadSetupPhotos"
+    class="config-save"
+    style="margin-top:10px;background:#355f9f">
+ 
+    Upload setup photos
+ 
+</button>
+  
+  
 <div
     id="libraryConfigStatus">
 
@@ -3009,6 +3344,85 @@ document
         } catch (e) {
             status.textContent = 'Change PIN failed: ' + e.message;
         }
+    });
+
+    document.getElementById('uploadSetupZip').addEventListener('click', async () => {
+        const fileInput = document.getElementById('setupZipFile');
+        const file = fileInput.files && fileInput.files.length > 0 ? fileInput.files[0] : null;
+        const status = document.getElementById('updateStatus');
+
+        if (!file) {
+            status.textContent = 'Choose a ZIP file first.';
+            return;
+        }
+
+        const pin = prompt('Enter setup PIN', '');
+        if (pin === null) return;
+
+        status.textContent = 'Uploading setup ZIP...';
+
+        try {
+            const response = await fetch(
+                '/api/setup-upload-zip?pin=' + encodeURIComponent(pin) + '&filename=' + encodeURIComponent(file.name),
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/zip' },
+                    body: file
+                }
+            );
+
+            const result = await response.json();
+            if (!response.ok || !result.ok) {
+                throw new Error(result.error || 'Upload failed');
+            }
+
+            status.textContent = 'Upload complete: ' + result.importedCount + ' images imported. Open setup mode to analyze.';
+        } catch (e) {
+            status.textContent = 'Setup ZIP upload failed: ' + e.message;
+        }
+    });
+
+    document.getElementById('uploadSetupPhotos').addEventListener('click', async () => {
+        const fileInput = document.getElementById('setupPhotoFiles');
+        const files = fileInput.files ? Array.from(fileInput.files) : [];
+        const status = document.getElementById('updateStatus');
+
+        if (files.length === 0) {
+            status.textContent = 'Choose one or more images first.';
+            return;
+        }
+
+        const pin = prompt('Enter setup PIN', '');
+        if (pin === null) return;
+
+        let uploaded = 0;
+        status.textContent = 'Uploading setup photos (0/' + files.length + ')...';
+
+        for (const file of files) {
+            try {
+                const response = await fetch(
+                    '/api/setup-upload-image?pin=' + encodeURIComponent(pin) + '&filename=' + encodeURIComponent(file.name),
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+                        body: file
+                    }
+                );
+
+                const result = await response.json();
+                if (!response.ok || !result.ok) {
+                    throw new Error(result.error || 'Upload failed');
+                }
+
+                uploaded += 1;
+                status.textContent = 'Uploading setup photos (' + uploaded + '/' + files.length + ')...';
+            } catch (e) {
+                status.textContent = 'Photo upload failed on "' + file.name + '": ' + e.message;
+                return;
+            }
+        }
+
+        status.textContent = 'Photo upload complete: ' + uploaded + ' files uploaded. Open setup mode to analyze.';
     });
 
 

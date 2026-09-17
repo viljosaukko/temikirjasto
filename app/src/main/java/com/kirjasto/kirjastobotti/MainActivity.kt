@@ -2038,6 +2038,11 @@ class MainActivity : ComponentActivity() {
         return prefs.getString("setup_pin", SETUP_MODE_PIN) ?: SETUP_MODE_PIN
     }
 
+    fun isSetupPinValid(pin: String?): Boolean {
+        val entered = pin?.trim().orEmpty()
+        return entered == getStoredSetupPin()
+    }
+
     fun setSetupPin(currentPin: String, newPin: String): Boolean {
         // Verify the current PIN first
         if (getStoredSetupPin() != currentPin) return false
@@ -2047,9 +2052,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun openSetupModeIfAllowed(pin: String?): Boolean {
-        val entered = pin?.trim().orEmpty()
-        val stored = getStoredSetupPin()
-        if (entered != stored) {
+        if (!isSetupPinValid(pin)) {
             runOnUiThread {
                 Toast.makeText(this, "Väärä PIN-koodi", Toast.LENGTH_SHORT).show()
             }
