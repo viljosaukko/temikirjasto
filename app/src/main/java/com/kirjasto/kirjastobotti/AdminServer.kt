@@ -69,16 +69,18 @@ class AdminServer(
     private val workers =
         Executors.newCachedThreadPool()
 
-
     private val safety:
             ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor()
 
+    private val requestTimestamps =
+        Collections.synchronizedMap(
+            mutableMapOf<String, MutableList<Long>>()
+        )
 
     @Volatile
     private var lastCommandAt =
         0L
-
 
     @Volatile
     private var lastX =
@@ -89,6 +91,17 @@ class AdminServer(
     private var lastY =
         0f
 
+
+    private fun allowRequest(clientAddress: String): Boolean {
+        val now = System.currentTimeMillis()
+        val timestamps = requestTimestamps.computeIfAbsent(clientAddress) { mutableListOf() }
+        timestamps.removeAll { now - it > 60_000 }
+        if (timestamps.size >= 60) {
+            return false
+        }
+        timestamps.add(now)
+        return true
+    }
 
     fun start() {
 
@@ -306,6 +319,16 @@ class AdminServer(
                 val rawTarget =
                     parts[1]
 
+                val clientAddress = socket.inetAddress?.hostAddress ?: "unknown"
+                if (!allowRequest(clientAddress)) {
+                    writeText(
+                        it.getOutputStream(),
+                        429,
+                        "{\"ok\":false,\"error\":\"rate limit exceeded\"}",
+                        "application/json; charset=utf-8"
+                    )
+                    return
+                }
 
                 val target =
                     rawTarget.substringBefore(
@@ -432,6 +455,92 @@ class AdminServer(
                                 "ok":true
                             }
                             """.trimIndent(),
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+
+                    /*
+                     * Open setup mode after a PIN check.
+                     */
+                    method == "POST" &&
+                           target == "/api/setup-mode" -> {
+
+                       val pin = query["pin"]?.trim().orEmpty()
+                       val main = context as? MainActivity
+
+                       if (main == null || !main.openSetupModeIfAllowed(pin)) {
+                           writeText(
+                               it.getOutputStream(),
+                               403,
+                               """
+                               {
+                                   "ok":false,
+                                   "error":"invalid pin"
+                               }
+                               """.trimIndent(),
+                               "application/json; charset=utf-8"
+                           )
+                           return
+                       }
+
+                       writeText(
+                           it.getOutputStream(),
+                           200,
+                           """
+                           {
+                               "ok":true
+                           }
+                           """.trimIndent(),
+                           "application/json; charset=utf-8"
+                       )
+                    }
+
+                    /*
+                     * Change the stored setup PIN. Requires the current PIN to be provided.
+                     */
+                    method == "POST" && target == "/api/set-setup-pin" -> {
+
+                        val current = query["current"]?.trim().orEmpty()
+                        val newPin = query["new"]?.trim().orEmpty()
+                        val main = context as? MainActivity
+
+                        if (main == null) {
+                            writeText(
+                                it.getOutputStream(),
+                                500,
+                                "{" + "\"ok\":false,\"error\":\"server\"}" ,
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        if (newPin.isBlank()) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"new pin required\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val ok = try { main.setSetupPin(current, newPin) } catch (e: Exception) { false }
+
+                        if (!ok) {
+                            writeText(
+                                it.getOutputStream(),
+                                403,
+                                "{" + "\"ok\":false,\"error\":\"invalid current pin\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{" + "\"ok\":true}",
                             "application/json; charset=utf-8"
                         )
                     }
@@ -809,6 +918,9 @@ class AdminServer(
 
                 404 ->
                     "Not Found"
+
+                429 ->
+                    "Too Many Requests"
 
                 else ->
                     "Error"
@@ -1662,12 +1774,31 @@ button:active,
 <button
     id="checkUpdates"
     class="config-save">
-
+ 
     Check for updates now
-
+ 
+</button>
+ 
+ 
+<button
+    id="setupModeButton"
+    class="config-save"
+    style="margin-top:10px;background:#2d4d66">
+ 
+    Open setup mode
+ 
 </button>
 
-
+<button
+    id="changePinButton"
+    class="config-save"
+    style="margin-top:10px;background:#66342d">
+ 
+    Change setup PIN
+ 
+</button>
+ 
+ 
 <div
     id="libraryConfigStatus">
 
@@ -2790,6 +2921,95 @@ document
             }
         }
     );
+
+
+document
+    .getElementById(
+        'setupModeButton'
+    )
+    .addEventListener(
+        'click',
+        async () => {
+
+            const pin =
+                prompt(
+                    'Enter setup PIN',
+                    ''
+                );
+
+            if(
+                pin === null
+            ){
+
+                return;
+            }
+
+            const status =
+                document.getElementById(
+                    'updateStatus'
+                );
+
+            status.textContent =
+                'Opening setup mode...';
+
+            try {
+
+                const response =
+                    await fetch(
+                        '/api/setup-mode?pin=' +
+                        encodeURIComponent(pin),
+                        {
+                            method:'POST'
+                        }
+                    );
+
+                const result =
+                    await response.json();
+
+                if(
+                    !response.ok ||
+                    !result.ok
+                ){
+
+                    throw new Error(
+                        result.error ||
+                        'Setup mode access denied'
+                    );
+                }
+
+                status.textContent =
+                    'Setup mode opened.';
+
+            } catch(
+                e
+            ) {
+
+                status.textContent =
+                    'Setup mode failed: ' +
+                    e.message;
+            }
+        }
+    );
+
+
+    document.getElementById('changePinButton').addEventListener('click', async () => {
+        const current = prompt('Enter current setup PIN', '');
+        if (current === null) return;
+        const next = prompt('Enter new setup PIN', '');
+        if (next === null) return;
+
+        const status = document.getElementById('updateStatus');
+        status.textContent = 'Updating PIN...';
+
+        try {
+            const response = await fetch('/api/set-setup-pin?current=' + encodeURIComponent(current) + '&new=' + encodeURIComponent(next), { method: 'POST' });
+            const result = await response.json();
+            if (!response.ok || !result.ok) throw new Error(result.error || 'Change PIN failed');
+            status.textContent = 'PIN changed successfully.';
+        } catch (e) {
+            status.textContent = 'Change PIN failed: ' + e.message;
+        }
+    });
 
 
 async function status(){

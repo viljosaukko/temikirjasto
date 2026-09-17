@@ -58,4 +58,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
     implementation(libs.temiSdk)
+
+    // ML Kit on-device text recognition (used for shelf sign OCR in Setup Mode)
+    implementation("com.google.mlkit:text-recognition:16.0.0")
 }

@@ -2,7 +2,9 @@ package com.kirjasto.kirjastobotti
 
 import android.annotation.SuppressLint
 import android.Manifest
+import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
@@ -21,6 +23,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -121,6 +124,8 @@ class MainActivity : ComponentActivity() {
         private const val TABLET_UP_ANGLE = 55
 
         private const val TABLET_TILT_SPEED = 1f
+
+        const val SETUP_MODE_PIN = "7421"
     }
 
 
@@ -2027,6 +2032,55 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+
+    private fun getStoredSetupPin(): String {
+        val prefs = getSharedPreferences("kirjastobotti_prefs", Context.MODE_PRIVATE)
+        return prefs.getString("setup_pin", SETUP_MODE_PIN) ?: SETUP_MODE_PIN
+    }
+
+    fun setSetupPin(currentPin: String, newPin: String): Boolean {
+        // Verify the current PIN first
+        if (getStoredSetupPin() != currentPin) return false
+        val prefs = getSharedPreferences("kirjastobotti_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("setup_pin", newPin).apply()
+        return true
+    }
+
+    fun openSetupModeIfAllowed(pin: String?): Boolean {
+        val entered = pin?.trim().orEmpty()
+        val stored = getStoredSetupPin()
+        if (entered != stored) {
+            runOnUiThread {
+                Toast.makeText(this, "Väärä PIN-koodi", Toast.LENGTH_SHORT).show()
+            }
+            return false
+        }
+
+        runOnUiThread {
+            val intent = Intent(this, SetupActivity::class.java)
+            startActivity(intent)
+            Toast.makeText(this, "Setup mode avattu", Toast.LENGTH_SHORT).show()
+        }
+        return true
+    }
+
+    private fun requestSetupModeAccess() {
+        val input = EditText(this).apply {
+            hint = "Syötä PIN-koodi"
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Setup mode")
+            .setMessage("Tämä toiminto on vain ylläpidolle.")
+            .setView(input)
+            .setPositiveButton("Avaa") { _, _ ->
+                openSetupModeIfAllowed(input.text?.toString())
+            }
+            .setNegativeButton("Peruuta", null)
+            .show()
+    }
 
     // =========================================================
     // BUTTON HELPERS

@@ -67,6 +67,12 @@
 
         </activity>
 
+        <activity
+            android:name=".SetupActivity"
+            android:exported="false"
+            android:label="Setup Mode"
+            android:theme="@style/Theme.Kirjastobotti" />
+
     </application>
 
 </manifest>
