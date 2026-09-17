@@ -119,53 +119,51 @@ class ShelfRepository(val context: Context) {
      */
     fun analyzeImagesReturnNew(imagePaths: List<String>): List<Shelf> {
         val existing = listShelves()
-        val nextIndex = (existing.size + 1)
-        var counter = nextIndex
+        var counter = existing.size + 1
+        val existingIds = existing.map { it.id }.toMutableSet()
         val result = mutableListOf<Shelf>()
 
         for (path in imagePaths) {
             val file = File(path)
             val name = file.nameWithoutExtension
-            // Try to find patterns like A, B-C, L-N etc.
-            val rangeRegex = Regex("([A-ZÅÄÖ]+(?:-[A-ZÅÄÖ]+)?)")
-
-            // First, try filename heuristics
-            val match = rangeRegex.find(name.replace("_"," ").uppercase())
-            var range = match?.groups?.get(1)?.value
             var ocrText: String? = null
 
-            // If possible, run OCR on the image to look for shelf signs (more reliable)
+            // Run OCR when possible; fallback to filename heuristics if OCR is weak.
             try {
                 ocrText = ImageOcr.recognizeTextBlocking(context, file)
             } catch (e: Exception) {
-                // OCR failed; continue with filename heuristic
+                Log.w(TAG, "OCR failed for ${file.name}", e)
             }
 
-            if (!ocrText.isNullOrBlank()) {
-                // merge OCR result with filename heuristic: look for A or B-C patterns in OCR text
-                val ocrMatch = rangeRegex.find(ocrText.uppercase())
-                if (ocrMatch != null) {
-                    range = ocrMatch.groups[1]?.value ?: range
+            val combinedText = buildString {
+                append(name.replace("_", " "))
+                if (!ocrText.isNullOrBlank()) {
+                    append('\n')
+                    append(ocrText)
                 }
-            }
+            }.uppercase()
 
-            val (start, end) = if (range != null && range.contains("-")) {
-                val parts = range.split("-")
-                Pair(parts[0], parts[1])
-            } else if (range != null) {
-                Pair(range, range)
-            } else Pair(null, null)
+            val rangeToken = findBestRangeToken(combinedText)
+            val (start, end) = parseRange(rangeToken)
 
-            val section = "kaunokirjallisuus" // default for prototype
-            val id = String.format("shelf_%03d", counter)
+            val section = deriveSectionLabel(name, ocrText)
+            val id = nextShelfId(name, counter, existingIds)
+            existingIds.add(id)
             counter += 1
 
             val confidence = when {
-                !ocrText.isNullOrBlank() && range != null -> 0.98
-                range != null -> 0.9
+                !ocrText.isNullOrBlank() && !rangeToken.isNullOrBlank() -> 0.98
+                !rangeToken.isNullOrBlank() -> 0.9
                 !ocrText.isNullOrBlank() -> 0.7
                 else -> 0.4
             }
+
+            val hint = buildSourceHint(
+                fileName = file.name,
+                section = section,
+                rangeToken = rangeToken,
+                ocrText = ocrText
+            )
 
             val shelf = Shelf(
                 id = id,
@@ -174,7 +172,8 @@ class ShelfRepository(val context: Context) {
                 rangeEnd = end,
                 imagePath = file.absolutePath,
                 confidence = confidence,
-                lastUpdated = System.currentTimeMillis()
+                lastUpdated = System.currentTimeMillis(),
+                draftNotes = hint
             )
 
             result.add(shelf)
@@ -221,5 +220,98 @@ class ShelfRepository(val context: Context) {
             )
             upsertShelf(stub)
         }
+    }
+
+    private fun nextShelfId(
+        fileStem: String,
+        fallbackIndex: Int,
+        existingIds: Set<String>
+    ): String {
+        val stem = fileStem
+            .lowercase()
+            .replace(Regex("[^a-z0-9]+"), "_")
+            .trim('_')
+            .take(28)
+            .ifBlank { "shelf" }
+
+        var candidate = "shelf_${stem}"
+        if (candidate !in existingIds) return candidate
+
+        var suffix = fallbackIndex
+        while (true) {
+            candidate = "shelf_${stem}_$suffix"
+            if (candidate !in existingIds) return candidate
+            suffix += 1
+        }
+    }
+
+    private fun findBestRangeToken(textUpper: String): String? {
+        val patterns = listOf(
+            Regex("""\b([A-ZÅÄÖ]{1,4})\s*[-–]\s*([A-ZÅÄÖ]{1,4})\b"""),
+            Regex("""\b(\d{1,3}(?:[.,]\d{1,3})?)\s*[-–]\s*(\d{1,3}(?:[.,]\d{1,3})?)\b"""),
+            Regex("""\b([A-ZÅÄÖ]{1,4})\b"""),
+            Regex("""\b(\d{1,3}(?:[.,]\d{1,3})?)\b""")
+        )
+
+        for (regex in patterns) {
+            val match = regex.find(textUpper)
+            if (match != null) {
+                return match.value
+                    .replace("–", "-")
+                    .replace("\\s+".toRegex(), "")
+            }
+        }
+        return null
+    }
+
+    private fun parseRange(token: String?): Pair<String?, String?> {
+        if (token.isNullOrBlank()) return Pair(null, null)
+        val normalized = token.replace("–", "-")
+        if (!normalized.contains("-")) {
+            return Pair(normalized, normalized)
+        }
+        val parts = normalized.split("-", limit = 2)
+        val start = parts.getOrNull(0)?.ifBlank { null }
+        val end = parts.getOrNull(1)?.ifBlank { null }
+        return Pair(start, end)
+    }
+
+    private fun deriveSectionLabel(fileStem: String, ocrText: String?): String {
+        val ocrLine = ocrText
+            ?.lineSequence()
+            ?.map { it.trim() }
+            ?.firstOrNull { it.length >= 4 && it.any { ch -> ch.isLetter() } }
+
+        val fromOcr = ocrLine
+            ?.replace(Regex("[^A-Za-zÅÄÖåäö0-9 ]"), " ")
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+
+        if (!fromOcr.isNullOrBlank()) {
+            return fromOcr.take(40)
+        }
+
+        val fromName = fileStem
+            .replace("_", " ")
+            .replace("-", " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        return if (fromName.isNotBlank()) fromName.take(40) else "kaunokirjallisuus"
+    }
+
+    private fun buildSourceHint(
+        fileName: String,
+        section: String?,
+        rangeToken: String?,
+        ocrText: String?
+    ): String {
+        val ocrSnippet = ocrText
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.take(80)
+            ?: "(no ocr)"
+
+        return "source=$fileName; sectionHint=${section ?: "-"}; rangeHint=${rangeToken ?: "-"}; ocr=$ocrSnippet"
     }
 }

@@ -208,6 +208,9 @@ fun EditableShelfRow(original: Shelf, repo: ShelfRepository, acceptedIds: Set<St
         Spacer(Modifier.height(6.dp))
 
         Text("Image: ${original.imagePath ?: "(none)"}")
+        if (!original.draftNotes.isNullOrBlank()) {
+            Text("Detected hints: ${original.draftNotes}")
+        }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             androidx.compose.material3.OutlinedTextField(value = section, onValueChange = { section = it }, label = { Text("Section") }, modifier = Modifier.weight(1f))
