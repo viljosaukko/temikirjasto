@@ -177,173 +177,294 @@ fun EditableShelfRow(original: Shelf, repo: ShelfRepository, acceptedIds: Set<St
     var section by remember { mutableStateOf(original.section ?: "") }
     var rangeStart by remember { mutableStateOf(original.rangeStart ?: "") }
     var rangeEnd by remember { mutableStateOf(original.rangeEnd ?: "") }
-    var ocrText by remember { mutableStateOf("") }
+    var ocrText by remember { mutableStateOf(original.rawText ?: "") }
     var accepted by remember { mutableStateOf(acceptedIds.contains(original.id)) }
+    var currentSuggestion by remember { mutableStateOf(original.ocrSuggestion) }
+    var confidenceScore by remember { mutableStateOf(original.confidence) }
 
-    // Try to load OCR text in background when row first appears
+    // Try to load structured OCR if not already cached
     LaunchedEffect(original.id) {
-        try {
-            val file = java.io.File(original.imagePath ?: "")
-            if (file.exists()) {
-                ocrText = ImageOcr.recognizeTextBlocking(repo.context, file)
+        if (original.rawText.isNullOrBlank()) {
+            try {
+                val file = java.io.File(original.imagePath ?: "")
+                if (file.exists()) {
+                    val result = LibraryShelfOcr.analyzeShelfImageBlocking(file)
+                    val primary = result.detections.firstOrNull()
+                    if (primary != null) {
+                        ocrText = primary.rawText
+                        if (rangeStart.isBlank()) rangeStart = primary.rangeStart ?: ""
+                        if (rangeEnd.isBlank()) rangeEnd = primary.rangeEnd ?: ""
+                        if (section.isBlank()) section = primary.section ?: ""
+                        currentSuggestion = primary.suggestion
+                        confidenceScore = primary.confidence
+                    }
+                }
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
         }
     }
 
-    Column(modifier = Modifier
-        .fillMaxWidth()
-        .padding(vertical = 8.dp)) {
+    val isLowConfidence = confidenceScore < 0.85 || original.requiresVerification || currentSuggestion != null
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("${original.id} — ${original.confidence}")
-            androidx.compose.material3.Checkbox(checked = accepted, onCheckedChange = { checked ->
-                accepted = checked
-                val newSet = acceptedIds.toMutableSet()
-                if (checked) newSet.add(original.id) else newSet.remove(original.id)
-                onAcceptedChange(newSet)
-            })
-        }
-
-        Spacer(Modifier.height(6.dp))
-
-        Text("Image: ${original.imagePath ?: "(none)"}")
-        if (!original.draftNotes.isNullOrBlank()) {
-            Text("Detected hints: ${original.draftNotes}")
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            androidx.compose.material3.OutlinedTextField(value = section, onValueChange = { section = it }, label = { Text("Section") }, modifier = Modifier.weight(1f))
-            androidx.compose.material3.OutlinedTextField(value = rangeStart, onValueChange = { rangeStart = it }, label = { Text("Range start") }, modifier = Modifier.weight(1f))
-            androidx.compose.material3.OutlinedTextField(value = rangeEnd, onValueChange = { rangeEnd = it }, label = { Text("Range end") }, modifier = Modifier.weight(1f))
-        }
-
-        Spacer(Modifier.height(6.dp))
-
-        Text("OCR: ")
-        androidx.compose.material3.Surface(modifier = Modifier.fillMaxWidth().padding(4.dp)) {
-            Text(ocrText.ifBlank { "(no OCR text)" }, maxLines = 6)
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                // Open image using FileProvider for safety
-                try {
-                    val file = java.io.File(original.imagePath ?: "")
-                    if (file.exists()) {
-                        val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
-                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-                            setDataAndType(uri, "image/*")
-                            addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        }
-                        context.startActivity(intent)
-                    } else {
-                        Toast.makeText(context, "Image not found", Toast.LENGTH_SHORT).show()
-                    }
-                } catch (e: Exception) {
-                    Toast.makeText(context, "Cannot open image: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            }) {
-                Text("Open image")
+    androidx.compose.material3.Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        colors = androidx.compose.material3.CardDefaults.cardColors(
+            containerColor = if (isLowConfidence) {
+                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
             }
+        )
+    ) {
+        Column(modifier = Modifier
+            .fillMaxWidth()
+            .padding(12.dp)) {
 
-            Text(
-                if (original.active) "Active" else "Draft",
-                style = MaterialTheme.typography.labelMedium
-            )
+            val formattedConfidence = "${(confidenceScore * 100).toInt()}%"
 
-            Button(onClick = {
-                val updatedShelf = original.copy(
-                    section = section.ifBlank { null },
-                    rangeStart = rangeStart.ifBlank { null },
-                    rangeEnd = rangeEnd.ifBlank { null },
-                    lastUpdated = System.currentTimeMillis()
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(
+                    text = "${original.id} — Confidence: $formattedConfidence",
+                    style = MaterialTheme.typography.titleMedium
                 )
-                onEdit(updatedShelf)
-                (context as android.app.Activity).runOnUiThread {
-                    Toast.makeText(context, "Edits applied locally for ${original.id}", Toast.LENGTH_SHORT).show()
-                }
-            }) {
-                Text("Apply edits locally")
+                androidx.compose.material3.Checkbox(checked = accepted, onCheckedChange = { checked ->
+                    accepted = checked
+                    val newSet = acceptedIds.toMutableSet()
+                    if (checked) newSet.add(original.id) else newSet.remove(original.id)
+                    onAcceptedChange(newSet)
+                })
             }
 
-            Button(onClick = {
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        val robot = com.robotemi.sdk.Robot.getInstance()
-                        val pos = robot.getPosition()
-                        val updatedShelf = original.copy(
-                            section = section.ifBlank { null },
-                            rangeStart = rangeStart.ifBlank { null },
-                            rangeEnd = rangeEnd.ifBlank { null },
-                            mapX = pos.x.toDouble(),
-                            mapY = pos.y.toDouble(),
-                            yaw = pos.yaw.toDouble(),
-                            lastUpdated = System.currentTimeMillis(),
-                            active = false
+            // Low Confidence Warning Alert Box
+            if (isLowConfidence) {
+                Spacer(Modifier.height(6.dp))
+                androidx.compose.material3.Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Text(
+                            text = "⚠ Low confidence detection ($formattedConfidence)",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onErrorContainer
                         )
-                        repo.updateShelfLocation(updatedShelf.id, updatedShelf.mapX ?: 0.0, updatedShelf.mapY ?: 0.0, updatedShelf.yaw ?: 0.0)
-                        val persisted = repo.listShelves().firstOrNull { it.id == updatedShelf.id } ?: updatedShelf
-                        onEdit(persisted)
-                        (context as android.app.Activity).runOnUiThread {
-                            Toast.makeText(context, "Temi position saved for ${original.id} (${pos.x}, ${pos.y}, ${pos.yaw})", Toast.LENGTH_LONG).show()
-                        }
-                    } catch (e: Exception) {
-                        (context as android.app.Activity).runOnUiThread {
-                            Toast.makeText(context, "Could not read Temi position: ${e.message}", Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }
-            }) {
-                Text("Capture Temi position")
-            }
+                        Text(
+                            text = "Detected raw text: \"${ocrText.ifBlank { original.normalizedText ?: "(none)" }}\"",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
 
-            Button(onClick = {
-                val updated = original.copy(
-                    section = section.ifBlank { null },
-                    rangeStart = rangeStart.ifBlank { null },
-                    rangeEnd = rangeEnd.ifBlank { null },
-                    active = false,
-                    lastUpdated = System.currentTimeMillis()
-                )
-
-                val missing = buildList {
-                    if (updated.section.isNullOrBlank()) add("section")
-                    if (updated.rangeStart.isNullOrBlank() && updated.rangeEnd.isNullOrBlank()) add("range")
-                    if (updated.mapX == null || updated.mapY == null || updated.yaw == null) add("Temi position")
-                    if (updated.imagePath.isNullOrBlank()) add("image")
-                }
-
-                val confirmMessage = if (missing.isEmpty()) {
-                    "Approve this shelf and activate it for robot navigation?"
-                } else {
-                    "This shelf is incomplete: ${missing.joinToString(", ")}. Save it as draft and review again?"
-                }
-
-                AlertDialog.Builder(context as android.app.Activity)
-                    .setTitle("Final approval")
-                    .setMessage(confirmMessage)
-                    .setPositiveButton("Yes") { _, _ ->
-                        scope.launch(Dispatchers.IO) {
-                            val finalShelf = updated.copy(active = missing.isEmpty())
-                            repo.upsertShelf(finalShelf)
-                            if (missing.isEmpty()) {
-                                val activated = repo.activateShelf(finalShelf.id)
-                                (context as android.app.Activity).runOnUiThread {
-                                    Toast.makeText(context, if (activated) "Shelf ${finalShelf.id} is now active." else "Shelf ${finalShelf.id} could not be activated.", Toast.LENGTH_LONG).show()
-                                }
-                            } else {
-                                (context as android.app.Activity).runOnUiThread {
-                                    Toast.makeText(context, "Shelf ${finalShelf.id} saved as draft; missing: ${missing.joinToString(", ")}", Toast.LENGTH_LONG).show()
+                        if (!currentSuggestion.isNullOrBlank()) {
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "Did you mean: ",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Button(
+                                    onClick = {
+                                        val parts = LibraryShelfOcr.parseRangeToken(currentSuggestion!!)
+                                        if (parts != null) {
+                                            rangeStart = parts.first ?: rangeStart
+                                            rangeEnd = parts.second ?: rangeEnd
+                                            confidenceScore = 0.95
+                                            currentSuggestion = null
+                                            Toast.makeText(context, "Applied suggestion: ${parts.first}-${parts.second}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Text("[ $currentSuggestion ]")
                                 }
                             }
-                            onEdit(finalShelf)
                         }
                     }
-                    .setNegativeButton("No", null)
-                    .show()
-            }) {
-                Text("Approve & activate")
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            Text("Image: ${original.imagePath ?: "(none)"}", style = MaterialTheme.typography.bodySmall)
+
+            if (original.boundingBox != null) {
+                val bb = original.boundingBox
+                Text(
+                    text = "Sign Region (Bounding Box): x=${bb.x}, y=${bb.y}, size=${bb.width}x${bb.height}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            if (!original.draftNotes.isNullOrBlank()) {
+                Text("Detected hints: ${original.draftNotes}", style = MaterialTheme.typography.bodySmall)
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = section,
+                    onValueChange = { section = it },
+                    label = { Text("Section") },
+                    modifier = Modifier.weight(1f)
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = rangeStart,
+                    onValueChange = { rangeStart = it },
+                    label = { Text("Range start (e.g. B, V)") },
+                    modifier = Modifier.weight(1f)
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = rangeEnd,
+                    onValueChange = { rangeEnd = it },
+                    label = { Text("Range end (e.g. C, Ö)") },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            Text("Raw OCR Output: ", style = MaterialTheme.typography.labelSmall)
+            androidx.compose.material3.Surface(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Text(
+                    text = ocrText.ifBlank { original.normalizedText ?: "(no OCR text)" },
+                    maxLines = 4,
+                    modifier = Modifier.padding(6.dp),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = {
+                    try {
+                        val file = java.io.File(original.imagePath ?: "")
+                        if (file.exists()) {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                                setDataAndType(uri, "image/*")
+                                addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(intent)
+                        } else {
+                            Toast.makeText(context, "Image file not found", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: Exception) {
+                        Toast.makeText(context, "Cannot open image: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }) {
+                    Text("Open Image")
+                }
+
+                Button(onClick = {
+                    val updatedShelf = original.copy(
+                        section = section.ifBlank { null },
+                        rangeStart = rangeStart.ifBlank { null },
+                        rangeEnd = rangeEnd.ifBlank { null },
+                        confidence = confidenceScore,
+                        requiresVerification = false,
+                        lastUpdated = System.currentTimeMillis()
+                    )
+                    onEdit(updatedShelf)
+                    Toast.makeText(context, "Edits applied locally for ${original.id}", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("Apply Edits")
+                }
+
+                Button(onClick = {
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val robot = com.robotemi.sdk.Robot.getInstance()
+                            val pos = robot.getPosition()
+                            val updatedShelf = original.copy(
+                                section = section.ifBlank { null },
+                                rangeStart = rangeStart.ifBlank { null },
+                                rangeEnd = rangeEnd.ifBlank { null },
+                                mapX = pos.x.toDouble(),
+                                mapY = pos.y.toDouble(),
+                                yaw = pos.yaw.toDouble(),
+                                lastUpdated = System.currentTimeMillis(),
+                                active = false
+                            )
+                            repo.updateShelfLocation(updatedShelf.id, updatedShelf.mapX ?: 0.0, updatedShelf.mapY ?: 0.0, updatedShelf.yaw ?: 0.0)
+                            val persisted = repo.listShelves().firstOrNull { it.id == updatedShelf.id } ?: updatedShelf
+                            onEdit(persisted)
+                            (context as android.app.Activity).runOnUiThread {
+                                Toast.makeText(context, "Temi position saved (${pos.x}, ${pos.y})", Toast.LENGTH_LONG).show()
+                            }
+                        } catch (e: Exception) {
+                            (context as android.app.Activity).runOnUiThread {
+                                Toast.makeText(context, "Could not read Temi position: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }) {
+                    Text("Capture Position")
+                }
+
+                Button(onClick = {
+                    val updated = original.copy(
+                        section = section.ifBlank { null },
+                        rangeStart = rangeStart.ifBlank { null },
+                        rangeEnd = rangeEnd.ifBlank { null },
+                        active = false,
+                        lastUpdated = System.currentTimeMillis()
+                    )
+
+                    val missing = buildList {
+                        if (updated.section.isNullOrBlank()) add("section")
+                        if (updated.rangeStart.isNullOrBlank() && updated.rangeEnd.isNullOrBlank()) add("range")
+                        if (updated.mapX == null || updated.mapY == null || updated.yaw == null) add("Temi position")
+                        if (updated.imagePath.isNullOrBlank()) add("image")
+                    }
+
+                    val confirmMessage = if (missing.isEmpty()) {
+                        "Approve this shelf and activate it for Temi navigation?"
+                    } else {
+                        "This shelf is incomplete: ${missing.joinToString(", ")}. Save as draft?"
+                    }
+
+                    AlertDialog.Builder(context as android.app.Activity)
+                        .setTitle("Human Verification")
+                        .setMessage(confirmMessage)
+                        .setPositiveButton("Confirm & Save") { _, _ ->
+                            scope.launch(Dispatchers.IO) {
+                                val finalShelf = updated.copy(
+                                    active = missing.isEmpty(),
+                                    requiresVerification = false
+                                )
+                                repo.upsertShelf(finalShelf)
+                                if (missing.isEmpty()) {
+                                    val activated = repo.activateShelf(finalShelf.id)
+                                    (context as android.app.Activity).runOnUiThread {
+                                        Toast.makeText(context, if (activated) "Shelf ${finalShelf.id} activated!" else "Could not activate.", Toast.LENGTH_LONG).show()
+                                    }
+                                } else {
+                                    (context as android.app.Activity).runOnUiThread {
+                                        Toast.makeText(context, "Shelf ${finalShelf.id} saved as draft.", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                                onEdit(finalShelf)
+                            }
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }) {
+                    Text("Approve & Save")
+                }
             }
         }
     }

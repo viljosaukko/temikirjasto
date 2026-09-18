@@ -121,19 +121,24 @@ class ShelfRepository(val context: Context) {
         val existing = listShelves()
         var counter = existing.size + 1
         val existingIds = existing.map { it.id }.toMutableSet()
+        val usedRangeTokens = existing
+            .mapNotNull { normalizeRangeToken(it.rangeStart, it.rangeEnd) }
+            .toMutableSet()
         val result = mutableListOf<Shelf>()
 
         for (path in imagePaths) {
             val file = File(path)
             val name = file.nameWithoutExtension
-            var ocrText: String? = null
+            var structuredResult: ShelfDetectionResult? = null
 
-            // Run OCR when possible; fallback to filename heuristics if OCR is weak.
             try {
-                ocrText = ImageOcr.recognizeTextBlocking(context, file)
+                structuredResult = LibraryShelfOcr.analyzeShelfImageBlocking(file)
             } catch (e: Exception) {
-                Log.w(TAG, "OCR failed for ${file.name}", e)
+                Log.w(TAG, "Library OCR failed for ${file.name}", e)
             }
+
+            val primaryDetection = structuredResult?.detections?.firstOrNull()
+            val ocrText = primaryDetection?.rawText ?: primaryDetection?.normalizedText
 
             val combinedText = buildString {
                 append(name.replace("_", " "))
@@ -143,17 +148,23 @@ class ShelfRepository(val context: Context) {
                 }
             }.uppercase()
 
-            val rangeToken = findBestRangeToken(combinedText)
-            val (start, end) = parseRange(rangeToken)
+            val candidates = extractRangeCandidates(combinedText)
+            val fallbackRangeToken = pickRangeToken(candidates, usedRangeTokens)
+            val fallbackRange = parseRange(fallbackRangeToken)
 
-            val section = deriveSectionLabel(name, ocrText)
+            val start = primaryDetection?.rangeStart ?: fallbackRange.first
+            val end = primaryDetection?.rangeEnd ?: fallbackRange.second
+            normalizeRangeToken(start, end)?.let { usedRangeTokens.add(it) }
+
+            val section = primaryDetection?.section ?: deriveSectionLabel(name, ocrText)
             val id = nextShelfId(name, counter, existingIds)
             existingIds.add(id)
             counter += 1
 
-            val confidence = when {
-                !ocrText.isNullOrBlank() && !rangeToken.isNullOrBlank() -> 0.98
-                !rangeToken.isNullOrBlank() -> 0.9
+            val confidence = primaryDetection?.confidence ?: when {
+                !ocrText.isNullOrBlank() && !fallbackRangeToken.isNullOrBlank() && candidates.size == 1 -> 0.98
+                !ocrText.isNullOrBlank() && !fallbackRangeToken.isNullOrBlank() -> 0.9
+                !fallbackRangeToken.isNullOrBlank() -> 0.82
                 !ocrText.isNullOrBlank() -> 0.7
                 else -> 0.4
             }
@@ -161,7 +172,8 @@ class ShelfRepository(val context: Context) {
             val hint = buildSourceHint(
                 fileName = file.name,
                 section = section,
-                rangeToken = rangeToken,
+                rangeToken = if (start != null && end != null) "$start-$end" else fallbackRangeToken,
+                candidateCount = candidates.size,
                 ocrText = ocrText
             )
 
@@ -173,7 +185,12 @@ class ShelfRepository(val context: Context) {
                 imagePath = file.absolutePath,
                 confidence = confidence,
                 lastUpdated = System.currentTimeMillis(),
-                draftNotes = hint
+                draftNotes = hint,
+                rawText = primaryDetection?.rawText,
+                normalizedText = primaryDetection?.normalizedText ?: (if (start != null && end != null) "$start-$end" else null),
+                boundingBox = primaryDetection?.boundingBox,
+                ocrSuggestion = primaryDetection?.suggestion,
+                requiresVerification = primaryDetection?.requiresVerification ?: (confidence < 0.85)
             )
 
             result.add(shelf)
@@ -245,23 +262,45 @@ class ShelfRepository(val context: Context) {
         }
     }
 
-    private fun findBestRangeToken(textUpper: String): String? {
+    private fun extractRangeCandidates(textUpper: String): List<String> {
+        val candidates = mutableListOf<String>()
         val patterns = listOf(
             Regex("""\b([A-ZÅÄÖ]{1,4})\s*[-–]\s*([A-ZÅÄÖ]{1,4})\b"""),
-            Regex("""\b(\d{1,3}(?:[.,]\d{1,3})?)\s*[-–]\s*(\d{1,3}(?:[.,]\d{1,3})?)\b"""),
+            Regex("""\b([0-9]{1,3}(?:[.,][0-9]{1,3})?)\s*[-–]\s*([0-9]{1,3}(?:[.,][0-9]{1,3})?)\b"""),
+            Regex("""\b([A-ZÅÄÖ]{1,4})\s*([0-9]{1,3})\b"""),
             Regex("""\b([A-ZÅÄÖ]{1,4})\b"""),
-            Regex("""\b(\d{1,3}(?:[.,]\d{1,3})?)\b""")
+            Regex("""\b([0-9]{2,3}(?:[.,][0-9]{1,3})?)\b""")
         )
 
         for (regex in patterns) {
-            val match = regex.find(textUpper)
-            if (match != null) {
-                return match.value
+            regex.findAll(textUpper).forEach { match ->
+                val token = match.value
                     .replace("–", "-")
                     .replace("\\s+".toRegex(), "")
+                    .trim('-')
+                if (token.isNotBlank()) {
+                    candidates.add(token)
+                }
             }
         }
-        return null
+
+        return candidates.distinct()
+    }
+
+    private fun pickRangeToken(
+        candidates: List<String>,
+        usedRangeTokens: Set<String>
+    ): String? {
+        if (candidates.isEmpty()) return null
+        val unseen = candidates.firstOrNull { it !in usedRangeTokens }
+        return unseen ?: candidates.first()
+    }
+
+    private fun normalizeRangeToken(start: String?, end: String?): String? {
+        if (start.isNullOrBlank() && end.isNullOrBlank()) return null
+        val a = start?.trim()?.uppercase().orEmpty()
+        val b = end?.trim()?.uppercase().orEmpty()
+        return if (b.isBlank() || a == b) a else "$a-$b"
     }
 
     private fun parseRange(token: String?): Pair<String?, String?> {
@@ -304,6 +343,7 @@ class ShelfRepository(val context: Context) {
         fileName: String,
         section: String?,
         rangeToken: String?,
+        candidateCount: Int,
         ocrText: String?
     ): String {
         val ocrSnippet = ocrText
@@ -312,6 +352,6 @@ class ShelfRepository(val context: Context) {
             ?.take(80)
             ?: "(no ocr)"
 
-        return "source=$fileName; sectionHint=${section ?: "-"}; rangeHint=${rangeToken ?: "-"}; ocr=$ocrSnippet"
+        return "source=$fileName; sectionHint=${section ?: "-"}; rangeHint=${rangeToken ?: "-"}; candidates=$candidateCount; ocr=$ocrSnippet"
     }
 }

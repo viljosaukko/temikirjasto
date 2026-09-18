@@ -45,6 +45,12 @@ class AdminServer(
     private val libraryConfig =
         LibraryConfig(context)
 
+    private val controlKeybindPrefs =
+        context.getSharedPreferences(
+            PREFS_CONTROL_KEYBINDS,
+            Context.MODE_PRIVATE
+        )
+
 
     companion object {
 
@@ -59,6 +65,9 @@ class AdminServer(
 
         private const val MAX_SETUP_IMAGE_UPLOAD_BYTES =
             10 * 1024 * 1024
+
+        private const val PREFS_CONTROL_KEYBINDS =
+            "kirjastobotti_control_keybinds"
     }
 
 
@@ -761,6 +770,74 @@ class AdminServer(
                         )
                     }
 
+                    /*
+                     * Get manual drive keybinds for keyboard control.
+                     */
+                    method == "GET" &&
+                            target == "/api/control-keybinds" -> {
+
+                        val keybinds = getControlKeybinds()
+                        val json =
+                            "{" +
+                                    "\"forward\":\"${jsonEscape(keybinds["forward"] ?: "w")}\"," +
+                                    "\"left\":\"${jsonEscape(keybinds["left"] ?: "a")}\"," +
+                                    "\"backward\":\"${jsonEscape(keybinds["backward"] ?: "s")}\"," +
+                                    "\"right\":\"${jsonEscape(keybinds["right"] ?: "d")}\"" +
+                                    "}"
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            json,
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+                    /*
+                     * Update manual drive keybinds. Requires setup PIN.
+                     */
+                    method == "POST" &&
+                            target == "/api/control-keybinds" -> {
+
+                        val pin = query["pin"]?.trim().orEmpty()
+                        val main = context as? MainActivity
+                        if (main == null || !main.isSetupPinValid(pin)) {
+                            writeText(
+                                it.getOutputStream(),
+                                403,
+                                "{" + "\"ok\":false,\"error\":\"invalid pin\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val normalized = normalizeControlKeybinds(
+                            forward = query["forward"],
+                            left = query["left"],
+                            backward = query["backward"],
+                            right = query["right"]
+                        )
+
+                        if (normalized == null) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"invalid keybinds; use unique single letters or digits\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        saveControlKeybinds(normalized)
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{" + "\"ok\":true}",
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
 
                     /*
                      * Get library configuration.
@@ -1168,6 +1245,59 @@ class AdminServer(
                 .replace(Regex("[^A-Za-z0-9._-]"), "_")
 
         return cleaned.ifBlank { "kuvat.zip" }
+    }
+
+
+    private fun getControlKeybinds(): Map<String, String> {
+        val forward = controlKeybindPrefs.getString("forward", "w") ?: "w"
+        val left = controlKeybindPrefs.getString("left", "a") ?: "a"
+        val backward = controlKeybindPrefs.getString("backward", "s") ?: "s"
+        val right = controlKeybindPrefs.getString("right", "d") ?: "d"
+        return mapOf(
+            "forward" to forward,
+            "left" to left,
+            "backward" to backward,
+            "right" to right
+        )
+    }
+
+    private fun normalizeControlKeybinds(
+        forward: String?,
+        left: String?,
+        backward: String?,
+        right: String?
+    ): Map<String, String>? {
+        val f = normalizeKeybindToken(forward) ?: return null
+        val l = normalizeKeybindToken(left) ?: return null
+        val b = normalizeKeybindToken(backward) ?: return null
+        val r = normalizeKeybindToken(right) ?: return null
+
+        val unique = setOf(f, l, b, r)
+        if (unique.size < 4) return null
+
+        return mapOf(
+            "forward" to f,
+            "left" to l,
+            "backward" to b,
+            "right" to r
+        )
+    }
+
+    private fun normalizeKeybindToken(value: String?): String? {
+        val v = value?.trim()?.lowercase().orEmpty()
+        if (v.length != 1) return null
+        val c = v[0]
+        if (!c.isLetterOrDigit()) return null
+        return v
+    }
+
+    private fun saveControlKeybinds(keybinds: Map<String, String>) {
+        controlKeybindPrefs.edit()
+            .putString("forward", keybinds["forward"])
+            .putString("left", keybinds["left"])
+            .putString("backward", keybinds["backward"])
+            .putString("right", keybinds["right"])
+            .apply()
     }
 
 
@@ -1864,38 +1994,42 @@ button:active,
 
 
 <button
+    id="driveForwardButton"
     class="w"
-    data-key="w">
-
-    W
-
+    data-action="forward">
+ 
+    Forward
+ 
 </button>
 
 
 <button
+    id="driveLeftButton"
     class="a"
-    data-key="a">
-
-    A
-
+    data-action="left">
+ 
+    Left
+ 
 </button>
 
 
 <button
+    id="driveBackwardButton"
     class="s"
-    data-key="s">
-
-    S
-
+    data-action="backward">
+ 
+    Backward
+ 
 </button>
 
 
 <button
+    id="driveRightButton"
     class="d"
-    data-key="d">
-
-    D
-
+    data-action="right">
+ 
+    Right
+ 
 </button>
 
 
@@ -1976,6 +2110,37 @@ button:active,
 
 </div>
 
+
+</div>
+
+
+<div class="section">
+
+<h2>
+    Drive keyboard keybinds
+</h2>
+
+<p class="hint">
+    Set unique one-character keys for manual drive.
+</p>
+
+<label class="config-label" for="keybindForward">Forward</label>
+<input id="keybindForward" class="config-input" type="text" maxlength="1" autocomplete="off">
+
+<label class="config-label" for="keybindLeft">Left</label>
+<input id="keybindLeft" class="config-input" type="text" maxlength="1" autocomplete="off">
+
+<label class="config-label" for="keybindBackward">Backward</label>
+<input id="keybindBackward" class="config-input" type="text" maxlength="1" autocomplete="off">
+
+<label class="config-label" for="keybindRight">Right</label>
+<input id="keybindRight" class="config-input" type="text" maxlength="1" autocomplete="off">
+
+<button id="saveControlKeybinds" class="config-save" style="margin-top:10px;background:#3a4668">
+    Save keybinds
+</button>
+
+<div id="keybindStatus" class="hint"></div>
 
 </div>
 
@@ -2217,7 +2382,7 @@ button:active,
 <script>
 
 
-const keys =
+const activeActions =
     new Set();
 
 
@@ -2235,6 +2400,13 @@ let controllerActive =
 
 const DEADZONE =
     0.15;
+
+let keybinds = {
+    forward: 'w',
+    left: 'a',
+    backward: 's',
+    right: 'd'
+};
 
 
 /*
@@ -2316,13 +2488,13 @@ function applyDeadzone(
 function send(){
 
     const x =
-        (keys.has('w') ? 1 : 0) +
-        (keys.has('s') ? -1 : 0);
+        (activeActions.has('forward') ? 1 : 0) +
+        (activeActions.has('backward') ? -1 : 0);
 
 
     const y =
-        (keys.has('a') ? 1 : 0) +
-        (keys.has('d') ? -1 : 0);
+        (activeActions.has('left') ? 1 : 0) +
+        (activeActions.has('right') ? -1 : 0);
 
 
     fetch(
@@ -2338,7 +2510,7 @@ function send(){
 
 
 function start(
-    key,
+    action,
     button
 ){
 
@@ -2350,8 +2522,8 @@ function start(
     }
 
 
-    keys.add(
-        key
+    activeActions.add(
+        action
     );
 
 
@@ -2377,12 +2549,12 @@ function start(
 
 
 function end(
-    key,
+    action,
     button
 ){
 
-    keys.delete(
-        key
+    activeActions.delete(
+        action
     );
 
 
@@ -2400,7 +2572,7 @@ function end(
 
 
     if(
-        !keys.size
+        !activeActions.size
     ){
 
         clearInterval(
@@ -2416,13 +2588,13 @@ function end(
 
 document
     .querySelectorAll(
-        'button[data-key]'
+        'button[data-action]'
     )
     .forEach(
         button => {
 
-            const key =
-                button.dataset.key;
+            const action =
+                button.dataset.action;
 
 
             button.onpointerdown =
@@ -2431,7 +2603,7 @@ document
                     event.preventDefault();
 
                     start(
-                        key,
+                        action,
                         button
                     );
                 };
@@ -2443,7 +2615,7 @@ document
                     event.preventDefault();
 
                     end(
-                        key,
+                        action,
                         button
                     );
                 };
@@ -2455,13 +2627,13 @@ document
                     event.preventDefault();
 
                     if(
-                        keys.has(
-                            key
+                        activeActions.has(
+                            action
                         )
                     ){
 
                         end(
-                            key,
+                            action,
                             button
                         );
                     }
@@ -2472,13 +2644,13 @@ document
                 () => {
 
                     if(
-                        keys.has(
-                            key
+                        activeActions.has(
+                            action
                         )
                     ){
 
                         end(
-                            key,
+                            action,
                             button
                         );
                     }
@@ -2490,9 +2662,30 @@ document
 /*
  * Keyboard movement.
  *
- * W, A, S and D work normally inside
- * text fields and do not control the robot.
+ * Keyboard keys work normally inside text fields and
+ * do not control the robot there.
  */
+function actionForKey(
+    key
+){
+    for (const [action, mapped] of Object.entries(keybinds)) {
+        if (mapped === key) {
+            return action;
+        }
+    }
+    return null;
+}
+
+function buttonForAction(
+    action
+){
+    return document.querySelector(
+        'button[data-action="' +
+        action +
+        '"]'
+    );
+}
+
 addEventListener(
     'keydown',
     event => {
@@ -2511,16 +2704,8 @@ addEventListener(
             event.key.toLowerCase();
 
 
-        if(
-            ![
-                'w',
-                'a',
-                's',
-                'd'
-            ].includes(
-                key
-            )
-        ){
+        const action = actionForKey(key);
+        if(!action){
 
             return;
         }
@@ -2530,8 +2715,8 @@ addEventListener(
 
 
         if(
-            keys.has(
-                key
+            activeActions.has(
+                action
             )
         ){
 
@@ -2540,15 +2725,11 @@ addEventListener(
 
 
         const button =
-            document.querySelector(
-                'button[data-key="' +
-                key +
-                '"]'
-            );
+            buttonForAction(action);
 
 
         start(
-            key,
+            action,
             button
         );
     }
@@ -2563,24 +2744,16 @@ addEventListener(
             event.key.toLowerCase();
 
 
-        if(
-            ![
-                'w',
-                'a',
-                's',
-                'd'
-            ].includes(
-                key
-            )
-        ){
+        const action = actionForKey(key);
+        if(!action){
 
             return;
         }
 
 
         if(
-            !keys.has(
-                key
+            !activeActions.has(
+                action
             )
         ){
 
@@ -2592,15 +2765,11 @@ addEventListener(
 
 
         const button =
-            document.querySelector(
-                'button[data-key="' +
-                key +
-                '"]'
-            );
+            buttonForAction(action);
 
 
         end(
-            key,
+            action,
             button
         );
     }

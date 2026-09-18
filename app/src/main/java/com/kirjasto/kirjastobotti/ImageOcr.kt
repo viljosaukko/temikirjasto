@@ -28,35 +28,16 @@ object ImageOcr {
     private const val TAG = "ImageOcr"
 
     fun recognizeTextBlocking(context: Context, imageFile: File): String {
-        return try {
-            // Load bitmap with sizing to avoid OOM on very large images
-            val options = BitmapFactory.Options()
-            options.inJustDecodeBounds = true
-            BitmapFactory.decodeFile(imageFile.absolutePath, options)
-            val maxDim = 1600
-            var inSampleSize = 1
-            val maxSide = Math.max(options.outWidth, options.outHeight)
-            if (maxSide > maxDim) {
-                inSampleSize = Integer.highestOneBit(maxSide / maxDim)
-                if (inSampleSize < 1) inSampleSize = 1
-            }
-            val decodeOptions = BitmapFactory.Options()
-            decodeOptions.inSampleSize = inSampleSize
-            decodeOptions.inPreferredConfig = Bitmap.Config.ARGB_8888
-            val bmp = BitmapFactory.decodeFile(imageFile.absolutePath, decodeOptions) ?: return ""
-
-            val processed = preprocessBitmap(bmp)
-            val image = InputImage.fromBitmap(processed, 0)
-            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-            val result = Tasks.await(recognizer.process(image))
-            result.text ?: ""
-        } catch (e: Exception) {
-            Log.e(TAG, "OCR failed for ${imageFile.absolutePath}", e)
-            ""
-        }
+        val result = LibraryShelfOcr.analyzeShelfImageBlocking(imageFile)
+        val primary = result.detections.firstOrNull()
+        return primary?.rawText ?: primary?.normalizedText ?: ""
     }
 
-    private fun preprocessBitmap(src: Bitmap): Bitmap {
+    fun analyzeShelfImage(context: Context, imageFile: File): ShelfDetectionResult {
+        return LibraryShelfOcr.analyzeShelfImageBlocking(imageFile)
+    }
+
+    private fun preprocessBitmap(src: Bitmap, threshold: Int): Bitmap {
         // Scale down if needed to limit size
         val maxDim = 1600
         val w = src.width
@@ -88,7 +69,6 @@ object ImageOcr {
 
         // Binarize to improve contrast for OCR
         val bw = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
-        val threshold = 150 // 0..255
         val pixels = IntArray(bmp.width * bmp.height)
         bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
         for (i in pixels.indices) {
@@ -101,5 +81,17 @@ object ImageOcr {
         }
         bw.setPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
         return bw
+    }
+
+    private fun scoreText(text: String): Int {
+        if (text.isBlank()) return 0
+        val compact = text.replace("\\s+".toRegex(), " ").trim()
+        val rangeHits = Regex("""\b([A-ZÅÄÖ]{1,4}\s*[-–]\s*[A-ZÅÄÖ]{1,4}|[0-9]{1,3}(?:[.,][0-9]{1,3})?\s*[-–]\s*[0-9]{1,3}(?:[.,][0-9]{1,3})?)\b""")
+            .findAll(compact.uppercase())
+            .count()
+        val letterDigits = Regex("""\b[A-ZÅÄÖ]{1,4}\s*[0-9]{1,3}\b""")
+            .findAll(compact.uppercase())
+            .count()
+        return compact.length + (rangeHits * 25) + (letterDigits * 12)
     }
 }

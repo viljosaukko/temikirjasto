@@ -19,7 +19,12 @@ data class Shelf(
     val confidence: Double = 1.0,
     val lastUpdated: Long = System.currentTimeMillis(),
     val active: Boolean = true,
-    val draftNotes: String? = null
+    val draftNotes: String? = null,
+    val rawText: String? = null,
+    val normalizedText: String? = null,
+    val boundingBox: ShelfBoundingBox? = null,
+    val ocrSuggestion: String? = null,
+    val requiresVerification: Boolean = false
 ) {
     fun isReadyForActivation(): Boolean {
         val hasSection = !section.isNullOrBlank()
@@ -42,11 +47,17 @@ data class Shelf(
         o.put("lastUpdated", lastUpdated)
         o.put("active", active)
         o.put("draftNotes", draftNotes)
+        if (rawText != null) o.put("rawText", rawText)
+        if (normalizedText != null) o.put("normalizedText", normalizedText)
+        if (boundingBox != null) o.put("boundingBox", boundingBox.toJson())
+        if (ocrSuggestion != null) o.put("ocrSuggestion", ocrSuggestion)
+        o.put("requiresVerification", requiresVerification)
         return o
     }
 
     companion object {
         fun fromJson(o: JSONObject): Shelf {
+            val bbObj = o.optJSONObject("boundingBox")
             return Shelf(
                 id = o.optString("id"),
                 section = if (o.has("section")) o.optString("section") else null,
@@ -68,7 +79,12 @@ data class Shelf(
                 confidence = o.optDouble("confidence", 1.0),
                 lastUpdated = o.optLong("lastUpdated", System.currentTimeMillis()),
                 active = if (o.has("active")) o.optBoolean("active", true) else true,
-                draftNotes = if (o.has("draftNotes")) o.optString("draftNotes") else null
+                draftNotes = if (o.has("draftNotes")) o.optString("draftNotes") else null,
+                rawText = if (o.has("rawText")) o.optString("rawText") else null,
+                normalizedText = if (o.has("normalizedText")) o.optString("normalizedText") else null,
+                boundingBox = ShelfBoundingBox.fromJson(bbObj),
+                ocrSuggestion = if (o.has("ocrSuggestion")) o.optString("ocrSuggestion") else null,
+                requiresVerification = o.optBoolean("requiresVerification", false)
             )
         }
     }
