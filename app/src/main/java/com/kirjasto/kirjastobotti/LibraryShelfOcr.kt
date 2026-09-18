@@ -147,12 +147,17 @@ object LibraryShelfOcr {
             return ShelfDetectionResult(emptyList())
         }
 
+        var bmp: Bitmap? = null
         return try {
-            val bmp = loadOriginalBitmap(imageFile) ?: return ShelfDetectionResult(emptyList())
+            bmp = loadOriginalBitmap(imageFile) ?: return ShelfDetectionResult(emptyList())
             analyzeBitmapBlocking(bmp)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to analyze image file: ${imageFile.absolutePath}", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to analyze image file: ${imageFile.absolutePath}", t)
             ShelfDetectionResult(emptyList())
+        } finally {
+            try {
+                bmp?.recycle()
+            } catch (_: Exception) {}
         }
     }
 
@@ -160,8 +165,9 @@ object LibraryShelfOcr {
      * Core recognition method for a Bitmap.
      */
     fun analyzeBitmapBlocking(bmp: Bitmap): ShelfDetectionResult {
+        var recognizer: com.google.mlkit.vision.text.TextRecognizer? = null
         return try {
-            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
             // Step 1: Run initial ML Kit pass to find text blocks and sign bounding boxes
             val inputImage = InputImage.fromBitmap(bmp, 0)
@@ -174,28 +180,41 @@ object LibraryShelfOcr {
 
             if (candidateBlocks.isNotEmpty()) {
                 for (block in candidateBlocks) {
-                    val boundingBox = block.boundingBox?.let { rect ->
-                        ShelfBoundingBox(
-                            x = Math.max(0, rect.left),
-                            y = Math.max(0, rect.top),
-                            width = Math.min(bmp.width - rect.left, rect.width()),
-                            height = Math.min(bmp.height - rect.top, rect.height())
-                        )
-                    }
+                    var croppedBmp: Bitmap? = null
+                    var processedBmp: Bitmap? = null
+                    try {
+                        val boundingBox = block.boundingBox?.let { rect ->
+                            ShelfBoundingBox(
+                                x = Math.max(0, rect.left),
+                                y = Math.max(0, rect.top),
+                                width = Math.min(bmp.width - rect.left, rect.width()),
+                                height = Math.min(bmp.height - rect.top, rect.height())
+                            )
+                        }
 
-                    // Step 3 & 4: Crop ROI and apply preprocessing pipeline
-                    val croppedBmp = cropBitmap(bmp, block.boundingBox)
-                    val processedBmp = preprocessRoiBitmap(croppedBmp)
+                        // Step 3 & 4: Crop ROI and apply preprocessing pipeline
+                        croppedBmp = cropBitmap(bmp, block.boundingBox)
+                        processedBmp = preprocessRoiBitmap(croppedBmp)
 
-                    // Step 5: Focused OCR on preprocessed sign ROI
-                    val roiImage = InputImage.fromBitmap(processedBmp, 0)
-                    val roiTextResult: Text = Tasks.await(recognizer.process(roiImage))
-                    val rawText = if (roiTextResult.text.isNotBlank()) roiTextResult.text else block.text
+                        // Step 5: Focused OCR on preprocessed sign ROI
+                        val roiImage = InputImage.fromBitmap(processedBmp, 0)
+                        val roiTextResult: Text = Tasks.await(recognizer.process(roiImage))
+                        val rawText = if (roiTextResult.text.isNotBlank()) roiTextResult.text else block.text
 
-                    // Step 6 & 7: Parse library ranges & compute confidence + suggestions
-                    val detection = interpretTextAsShelfDetection(rawText, boundingBox)
-                    if (detection != null) {
-                        detections.add(detection)
+                        // Step 6 & 7: Parse library ranges & compute confidence + suggestions
+                        val detection = interpretTextAsShelfDetection(rawText, boundingBox)
+                        if (detection != null) {
+                            detections.add(detection)
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Failed to process candidate text block", t)
+                    } finally {
+                        if (croppedBmp != null && croppedBmp != bmp) {
+                            try { croppedBmp.recycle() } catch (_: Exception) {}
+                        }
+                        if (processedBmp != null && processedBmp != croppedBmp && processedBmp != bmp) {
+                            try { processedBmp.recycle() } catch (_: Exception) {}
+                        }
                     }
                 }
             }
@@ -212,6 +231,10 @@ object LibraryShelfOcr {
         } catch (e: Throwable) {
             Log.e(TAG, "OCR recognition error", e)
             ShelfDetectionResult(emptyList())
+        } finally {
+            try {
+                recognizer?.close()
+            } catch (_: Exception) {}
         }
     }
 
@@ -342,7 +365,7 @@ object LibraryShelfOcr {
         val scaled = if (scale != 1.0f) {
             Bitmap.createScaledBitmap(src, w, h, true)
         } else {
-            src.copy(Bitmap.Config.ARGB_8888, true)
+            src
         }
 
         // Grayscale & Contrast enhancement
@@ -362,6 +385,10 @@ object LibraryShelfOcr {
         cm.postConcat(ColorMatrix(scaleContrast))
         paint.colorFilter = ColorMatrixColorFilter(cm)
         canvas.drawBitmap(scaled, 0f, 0f, paint)
+
+        if (scaled != src && scaled != dest) {
+            try { scaled.recycle() } catch (_: Exception) {}
+        }
 
         // Binarization (Otsu threshold approximation)
         val pixels = IntArray(dest.width * dest.height)
@@ -456,21 +483,32 @@ object LibraryShelfOcr {
     }
 
     private fun loadOriginalBitmap(file: File): Bitmap? {
-        val options = BitmapFactory.Options()
-        options.inJustDecodeBounds = true
-        BitmapFactory.decodeFile(file.absolutePath, options)
+        return try {
+            val options = BitmapFactory.Options()
+            options.inJustDecodeBounds = true
+            BitmapFactory.decodeFile(file.absolutePath, options)
+            if (options.outWidth <= 0 || options.outHeight <= 0) return null
 
-        val maxDim = 1600
-        var inSampleSize = 1
-        val maxSide = Math.max(options.outWidth, options.outHeight)
-        if (maxSide > maxDim) {
-            inSampleSize = Integer.highestOneBit(maxSide / maxDim)
-            if (inSampleSize < 1) inSampleSize = 1
+            val maxDim = 1024
+            val maxSide = Math.max(options.outWidth, options.outHeight)
+            var inSampleSize = 1
+            while (maxSide / (inSampleSize * 2) >= maxDim) {
+                inSampleSize *= 2
+            }
+
+            val decodeOptions = BitmapFactory.Options()
+            decodeOptions.inSampleSize = inSampleSize
+            decodeOptions.inPreferredConfig = Bitmap.Config.RGB_565
+            val decoded = BitmapFactory.decodeFile(file.absolutePath, decodeOptions) ?: return null
+
+            val argb = decoded.copy(Bitmap.Config.ARGB_8888, true)
+            if (argb != decoded) {
+                try { decoded.recycle() } catch (_: Exception) {}
+            }
+            argb
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error decoding file: ${file.name}", t)
+            null
         }
-
-        val decodeOptions = BitmapFactory.Options()
-        decodeOptions.inSampleSize = inSampleSize
-        decodeOptions.inPreferredConfig = Bitmap.Config.ARGB_8888
-        return BitmapFactory.decodeFile(file.absolutePath, decodeOptions)
     }
 }
