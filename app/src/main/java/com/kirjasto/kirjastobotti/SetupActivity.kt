@@ -36,6 +36,17 @@ class SetupActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         repo = ShelfRepository(this)
 
+        // Install uncaught exception handler to prevent silent crash exits and capture stack trace
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            Log.e("SetupActivity", "UNCAUGHT CRASH on thread ${thread.name}", throwable)
+            try {
+                val logFile = java.io.File(filesDir, "crash_log.txt")
+                logFile.writeText("Crash on ${java.util.Date()}:\n" + Log.getStackTraceString(throwable))
+            } catch (_: Exception) {}
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+
         setContent {
             MaterialTheme {
                 SetupScreen(repo)
@@ -81,7 +92,7 @@ fun SetupScreen(repo: ShelfRepository) {
                             acceptedIds = emptySet()
                             busy = false
                         }
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         Log.e("SetupActivity", "Error importing ZIP", e)
                         kotlinx.coroutines.withContext(Dispatchers.Main) {
                             busy = false
@@ -113,7 +124,7 @@ fun SetupScreen(repo: ShelfRepository) {
                             busy = false
                             Toast.makeText(repo.context, "Analyzed ${analyzed.size} image(s).", Toast.LENGTH_SHORT).show()
                         }
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         Log.e("SetupActivity", "Error analyzing images", e)
                         kotlinx.coroutines.withContext(Dispatchers.Main) {
                             busy = false
@@ -145,7 +156,7 @@ fun SetupScreen(repo: ShelfRepository) {
                                 acceptedIds = emptySet()
                             }
                         }
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         Log.e("SetupActivity", "Error saving drafts", e)
                         kotlinx.coroutines.withContext(Dispatchers.Main) {
                             Toast.makeText(repo.context, "Error saving drafts: ${e.message}", Toast.LENGTH_LONG).show()
@@ -185,19 +196,18 @@ fun SetupScreen(repo: ShelfRepository) {
         Text(statusTitle, style = MaterialTheme.typography.titleMedium)
 
         LazyColumn(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                items(detected) { s ->
-                    EditableShelfRow(s, repo, acceptedIds, onAcceptedChange = { newAccepted ->
+            items(items = detected, key = { it.id }) { s ->
+                EditableShelfRow(s, repo, acceptedIds, onAcceptedChange = { newAccepted ->
                     acceptedIds = newAccepted
-                    }, onEdit = { updatedShelf ->
-                        // replace in detected list
-                        val list = detected.toMutableList()
-                        val idx = list.indexOfFirst { it.id == updatedShelf.id }
-                        if (idx >= 0) {
-                            list[idx] = updatedShelf
-                            detected = list
-                        }
-                    })
-                }
+                }, onEdit = { updatedShelf ->
+                    val list = detected.toMutableList()
+                    val idx = list.indexOfFirst { it.id == updatedShelf.id }
+                    if (idx >= 0) {
+                        list[idx] = updatedShelf
+                        detected = list
+                    }
+                })
+            }
         }
 
         if (busy) {
@@ -211,37 +221,13 @@ fun EditableShelfRow(original: Shelf, repo: ShelfRepository, acceptedIds: Set<St
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    var section by remember { mutableStateOf(original.section ?: "") }
-    var rangeStart by remember { mutableStateOf(original.rangeStart ?: "") }
-    var rangeEnd by remember { mutableStateOf(original.rangeEnd ?: "") }
-    var ocrText by remember { mutableStateOf(original.rawText ?: "") }
-    var accepted by remember { mutableStateOf(acceptedIds.contains(original.id)) }
-    var currentSuggestion by remember { mutableStateOf(original.ocrSuggestion) }
-    var confidenceScore by remember { mutableStateOf(original.confidence) }
-
-    // Try to load structured OCR if not already cached
-    LaunchedEffect(original.id) {
-        if (original.rawText.isNullOrBlank()) {
-            try {
-                val file = java.io.File(original.imagePath ?: "")
-                if (file.exists()) {
-                    val result = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                        LibraryShelfOcr.analyzeShelfImageBlocking(file)
-                    }
-                    val primary = result.detections.firstOrNull()
-                    if (primary != null) {
-                        ocrText = primary.rawText
-                        if (rangeStart.isBlank()) rangeStart = primary.rangeStart ?: ""
-                        if (rangeEnd.isBlank()) rangeEnd = primary.rangeEnd ?: ""
-                        if (section.isBlank()) section = primary.section ?: ""
-                        currentSuggestion = primary.suggestion
-                        confidenceScore = primary.confidence
-                    }
-                }
-            } catch (_: Exception) {
-            }
-        }
-    }
+    var section by remember(original.id) { mutableStateOf(original.section ?: "") }
+    var rangeStart by remember(original.id) { mutableStateOf(original.rangeStart ?: "") }
+    var rangeEnd by remember(original.id) { mutableStateOf(original.rangeEnd ?: "") }
+    var ocrText by remember(original.id) { mutableStateOf(original.rawText ?: "") }
+    var accepted by remember(original.id, acceptedIds) { mutableStateOf(acceptedIds.contains(original.id)) }
+    var currentSuggestion by remember(original.id) { mutableStateOf(original.ocrSuggestion) }
+    var confidenceScore by remember(original.id) { mutableStateOf(original.confidence) }
 
     val isLowConfidence = confidenceScore < 0.85 || original.requiresVerification || currentSuggestion != null
 
