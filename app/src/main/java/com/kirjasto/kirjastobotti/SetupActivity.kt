@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -72,11 +73,21 @@ fun SetupScreen(repo: ShelfRepository) {
                 }
                 busy = true
                 scope.launch(Dispatchers.IO) {
-                    val imported = repo.importZip(zip.absolutePath)
-                    val analyzed = repo.analyzeImagesReturnNew(imported)
-                    detected = analyzed
-                    acceptedIds = emptySet()
-                    busy = false
+                    try {
+                        val imported = repo.importZip(zip.absolutePath)
+                        val analyzed = repo.analyzeImagesReturnNew(imported)
+                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                            detected = analyzed
+                            acceptedIds = emptySet()
+                            busy = false
+                        }
+                    } catch (e: Exception) {
+                        Log.e("SetupActivity", "Error importing ZIP", e)
+                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                            busy = false
+                            Toast.makeText(repo.context, "Error importing ZIP: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
             }) {
                 Text("Import ZIP from Downloads (kuvat.zip)")
@@ -85,12 +96,30 @@ fun SetupScreen(repo: ShelfRepository) {
             Button(onClick = {
                 busy = true
                 scope.launch(Dispatchers.IO) {
-                    val imagesDir = java.io.File(repo.context.filesDir, "shelf_images")
-                    val images = imagesDir.listFiles()?.map { it.absolutePath } ?: emptyList()
-                    val analyzed = repo.analyzeImagesReturnNew(images)
-                    detected = analyzed
-                    acceptedIds = emptySet()
-                    busy = false
+                    try {
+                        val imagesDir = java.io.File(repo.context.filesDir, "shelf_images")
+                        val images = imagesDir.listFiles()?.map { it.absolutePath } ?: emptyList()
+                        if (images.isEmpty()) {
+                            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                busy = false
+                                Toast.makeText(repo.context, "No images found in shelf_images. Please import kuvat.zip first.", Toast.LENGTH_LONG).show()
+                            }
+                            return@launch
+                        }
+                        val analyzed = repo.analyzeImagesReturnNew(images)
+                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                            detected = analyzed
+                            acceptedIds = emptySet()
+                            busy = false
+                            Toast.makeText(repo.context, "Analyzed ${analyzed.size} image(s).", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("SetupActivity", "Error analyzing images", e)
+                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                            busy = false
+                            Toast.makeText(repo.context, "Error analyzing images: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
             }) {
                 Text("Analyze images (OCR)")
@@ -98,21 +127,29 @@ fun SetupScreen(repo: ShelfRepository) {
 
             Button(onClick = {
                 scope.launch(Dispatchers.IO) {
-                    val toSave = detected.filter { acceptedIds.contains(it.id) }
-                    if (toSave.isNotEmpty()) {
-                        val saved = toSave.map { draft ->
-                            val updated = draft.copy(active = false, lastUpdated = System.currentTimeMillis())
-                            repo.upsertShelf(updated)
-                            updated
-                        }
-                        val invalid = saved.filter { !it.isReadyForActivation() }
-                        if (invalid.isNotEmpty()) {
-                            (repo.context as android.app.Activity).runOnUiThread {
-                                Toast.makeText(repo.context, "Some shelves are incomplete; save as draft or capture Temi position first", Toast.LENGTH_LONG).show()
+                    try {
+                        val toSave = detected.filter { acceptedIds.contains(it.id) }
+                        if (toSave.isNotEmpty()) {
+                            val saved = toSave.map { draft ->
+                                val updated = draft.copy(active = false, lastUpdated = System.currentTimeMillis())
+                                repo.upsertShelf(updated)
+                                updated
+                            }
+                            val invalid = saved.filter { !it.isReadyForActivation() }
+                            val reloaded = repo.listShelves().filter { if (draftOnly) !it.active else true }
+                            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                                if (invalid.isNotEmpty()) {
+                                    Toast.makeText(repo.context, "Some shelves are incomplete; save as draft or capture Temi position first", Toast.LENGTH_LONG).show()
+                                }
+                                detected = reloaded
+                                acceptedIds = emptySet()
                             }
                         }
-                        detected = repo.listShelves().filter { if (draftOnly) !it.active else true }
-                        acceptedIds = emptySet()
+                    } catch (e: Exception) {
+                        Log.e("SetupActivity", "Error saving drafts", e)
+                        kotlinx.coroutines.withContext(Dispatchers.Main) {
+                            Toast.makeText(repo.context, "Error saving drafts: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
                     }
                 }
             }) {
@@ -188,7 +225,9 @@ fun EditableShelfRow(original: Shelf, repo: ShelfRepository, acceptedIds: Set<St
             try {
                 val file = java.io.File(original.imagePath ?: "")
                 if (file.exists()) {
-                    val result = LibraryShelfOcr.analyzeShelfImageBlocking(file)
+                    val result = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                        LibraryShelfOcr.analyzeShelfImageBlocking(file)
+                    }
                     val primary = result.detections.firstOrNull()
                     if (primary != null) {
                         ocrText = primary.rawText

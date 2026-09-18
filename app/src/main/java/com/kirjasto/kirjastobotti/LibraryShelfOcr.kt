@@ -160,54 +160,59 @@ object LibraryShelfOcr {
      * Core recognition method for a Bitmap.
      */
     fun analyzeBitmapBlocking(bmp: Bitmap): ShelfDetectionResult {
-        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        return try {
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-        // Step 1: Run initial ML Kit pass to find text blocks and sign bounding boxes
-        val inputImage = InputImage.fromBitmap(bmp, 0)
-        val visionText: Text = Tasks.await(recognizer.process(inputImage))
+            // Step 1: Run initial ML Kit pass to find text blocks and sign bounding boxes
+            val inputImage = InputImage.fromBitmap(bmp, 0)
+            val visionText: Text = Tasks.await(recognizer.process(inputImage))
 
-        // Step 2: Filter and locate candidate shelf label regions (ignoring irrelevant background book titles)
-        val candidateBlocks = findShelfSignRegions(visionText, bmp.width, bmp.height)
+            // Step 2: Filter and locate candidate shelf label regions (ignoring irrelevant background book titles)
+            val candidateBlocks = findShelfSignRegions(visionText, bmp.width, bmp.height)
 
-        val detections = mutableListOf<ShelfDetection>()
+            val detections = mutableListOf<ShelfDetection>()
 
-        if (candidateBlocks.isNotEmpty()) {
-            for (block in candidateBlocks) {
-                val boundingBox = block.boundingBox?.let { rect ->
-                    ShelfBoundingBox(
-                        x = Math.max(0, rect.left),
-                        y = Math.max(0, rect.top),
-                        width = Math.min(bmp.width - rect.left, rect.width()),
-                        height = Math.min(bmp.height - rect.top, rect.height())
-                    )
-                }
+            if (candidateBlocks.isNotEmpty()) {
+                for (block in candidateBlocks) {
+                    val boundingBox = block.boundingBox?.let { rect ->
+                        ShelfBoundingBox(
+                            x = Math.max(0, rect.left),
+                            y = Math.max(0, rect.top),
+                            width = Math.min(bmp.width - rect.left, rect.width()),
+                            height = Math.min(bmp.height - rect.top, rect.height())
+                        )
+                    }
 
-                // Step 3 & 4: Crop ROI and apply preprocessing pipeline
-                val croppedBmp = cropBitmap(bmp, block.boundingBox)
-                val processedBmp = preprocessRoiBitmap(croppedBmp)
+                    // Step 3 & 4: Crop ROI and apply preprocessing pipeline
+                    val croppedBmp = cropBitmap(bmp, block.boundingBox)
+                    val processedBmp = preprocessRoiBitmap(croppedBmp)
 
-                // Step 5: Focused OCR on preprocessed sign ROI
-                val roiImage = InputImage.fromBitmap(processedBmp, 0)
-                val roiTextResult: Text = Tasks.await(recognizer.process(roiImage))
-                val rawText = if (roiTextResult.text.isNotBlank()) roiTextResult.text else block.text
+                    // Step 5: Focused OCR on preprocessed sign ROI
+                    val roiImage = InputImage.fromBitmap(processedBmp, 0)
+                    val roiTextResult: Text = Tasks.await(recognizer.process(roiImage))
+                    val rawText = if (roiTextResult.text.isNotBlank()) roiTextResult.text else block.text
 
-                // Step 6 & 7: Parse library ranges & compute confidence + suggestions
-                val detection = interpretTextAsShelfDetection(rawText, boundingBox)
-                if (detection != null) {
-                    detections.add(detection)
+                    // Step 6 & 7: Parse library ranges & compute confidence + suggestions
+                    val detection = interpretTextAsShelfDetection(rawText, boundingBox)
+                    if (detection != null) {
+                        detections.add(detection)
+                    }
                 }
             }
-        }
 
-        // Fallback: If no localized sign ROI matched high confidence, process whole image variants
-        if (detections.isEmpty()) {
-            val fallbackDetection = runFallbackWholeImageOcr(bmp, visionText)
-            if (fallbackDetection != null) {
-                detections.add(fallbackDetection)
+            // Fallback: If no localized sign ROI matched high confidence, process whole image variants
+            if (detections.isEmpty()) {
+                val fallbackDetection = runFallbackWholeImageOcr(bmp, visionText)
+                if (fallbackDetection != null) {
+                    detections.add(fallbackDetection)
+                }
             }
-        }
 
-        return ShelfDetectionResult(detections)
+            ShelfDetectionResult(detections)
+        } catch (e: Throwable) {
+            Log.e(TAG, "OCR recognition error", e)
+            ShelfDetectionResult(emptyList())
+        }
     }
 
     /**
