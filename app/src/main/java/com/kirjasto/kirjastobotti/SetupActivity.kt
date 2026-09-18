@@ -126,9 +126,11 @@ fun SetupScreen(repo: ShelfRepository) {
                         }
                     } catch (e: Throwable) {
                         Log.e("SetupActivity", "Error analyzing images", e)
+                        val cause = e.cause ?: e
+                        val detail = "${cause.javaClass.simpleName}: ${cause.message ?: e.message ?: "Unknown error"}"
                         kotlinx.coroutines.withContext(Dispatchers.Main) {
                             busy = false
-                            Toast.makeText(repo.context, "Error analyzing images: ${e.message}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(repo.context, "Error analyzing images: $detail", Toast.LENGTH_LONG).show()
                         }
                     }
                 }

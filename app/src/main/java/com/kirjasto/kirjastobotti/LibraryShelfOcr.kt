@@ -164,7 +164,8 @@ object LibraryShelfOcr {
             Log.d(TAG, "Loaded bitmap for ${imageFile.name}: ${bmp.width}x${bmp.height}")
             analyzeBitmapBlocking(bmp)
         } catch (t: Throwable) {
-            val errMsg = "Error in LibraryShelfOcr for ${imageFile.name}: ${t.javaClass.simpleName} - ${t.message}"
+            val cause = t.cause ?: t
+            val errMsg = "Error in LibraryShelfOcr for ${imageFile.name}: ${cause.javaClass.simpleName} - ${cause.message}"
             Log.e(TAG, errMsg, t)
             ShelfDetectionResult(emptyList(), lastError = errMsg)
         } finally {
@@ -242,7 +243,8 @@ object LibraryShelfOcr {
 
             ShelfDetectionResult(detections)
         } catch (e: Throwable) {
-            val errMsg = "ML Kit recognition error in LibraryShelfOcr: ${e.javaClass.simpleName} - ${e.message}"
+            val cause = e.cause ?: e
+            val errMsg = "ML Kit recognition error in LibraryShelfOcr: ${cause.javaClass.simpleName} - ${cause.message}"
             Log.e(TAG, errMsg, e)
             ShelfDetectionResult(emptyList(), lastError = errMsg)
         } finally {
