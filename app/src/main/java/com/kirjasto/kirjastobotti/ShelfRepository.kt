@@ -169,13 +169,19 @@ class ShelfRepository(val context: Context) {
                 else -> 0.4
             }
 
-            val hint = buildSourceHint(
+            val rawHint = buildSourceHint(
                 fileName = file.name,
                 section = section,
                 rangeToken = if (start != null && end != null) "$start-$end" else fallbackRangeToken,
                 candidateCount = candidates.size,
                 ocrText = ocrText
             )
+
+            val hint = if (structuredResult?.lastError != null) {
+                "$rawHint | ERROR: ${structuredResult.lastError}"
+            } else {
+                rawHint
+            }
 
             val shelf = Shelf(
                 id = id,

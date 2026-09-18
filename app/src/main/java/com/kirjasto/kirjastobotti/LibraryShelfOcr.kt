@@ -101,13 +101,15 @@ data class ShelfDetection(
 }
 
 data class ShelfDetectionResult(
-    val detections: List<ShelfDetection>
+    val detections: List<ShelfDetection>,
+    val lastError: String? = null
 ) {
     fun toJson(): JSONObject {
         val json = JSONObject()
         val arr = JSONArray()
         detections.forEach { arr.put(it.toJson()) }
         json.put("detections", arr)
+        if (lastError != null) json.put("last_error", lastError)
         return json
     }
 
@@ -118,7 +120,8 @@ data class ShelfDetectionResult(
             for (i in 0 until arr.length()) {
                 list.add(ShelfDetection.fromJson(arr.getJSONObject(i)))
             }
-            return ShelfDetectionResult(list)
+            val err = if (json.has("last_error")) json.optString("last_error") else null
+            return ShelfDetectionResult(list, err)
         }
     }
 }
@@ -144,16 +147,26 @@ object LibraryShelfOcr {
      */
     fun analyzeShelfImageBlocking(imageFile: File): ShelfDetectionResult {
         if (!imageFile.exists()) {
-            return ShelfDetectionResult(emptyList())
+            val err = "File does not exist: ${imageFile.name}"
+            Log.w(TAG, err)
+            return ShelfDetectionResult(emptyList(), lastError = err)
         }
 
+        Log.d(TAG, "Starting OCR analysis for file: ${imageFile.name} (${imageFile.length()} bytes)")
         var bmp: Bitmap? = null
         return try {
-            bmp = loadOriginalBitmap(imageFile) ?: return ShelfDetectionResult(emptyList())
+            bmp = loadOriginalBitmap(imageFile)
+            if (bmp == null) {
+                val err = "Failed to decode bitmap from ${imageFile.name}"
+                Log.w(TAG, err)
+                return ShelfDetectionResult(emptyList(), lastError = err)
+            }
+            Log.d(TAG, "Loaded bitmap for ${imageFile.name}: ${bmp.width}x${bmp.height}")
             analyzeBitmapBlocking(bmp)
         } catch (t: Throwable) {
-            Log.e(TAG, "Failed to analyze image file: ${imageFile.absolutePath}", t)
-            ShelfDetectionResult(emptyList())
+            val errMsg = "Error in LibraryShelfOcr for ${imageFile.name}: ${t.javaClass.simpleName} - ${t.message}"
+            Log.e(TAG, errMsg, t)
+            ShelfDetectionResult(emptyList(), lastError = errMsg)
         } finally {
             try {
                 bmp?.recycle()
@@ -229,8 +242,9 @@ object LibraryShelfOcr {
 
             ShelfDetectionResult(detections)
         } catch (e: Throwable) {
-            Log.e(TAG, "OCR recognition error", e)
-            ShelfDetectionResult(emptyList())
+            val errMsg = "ML Kit recognition error in LibraryShelfOcr: ${e.javaClass.simpleName} - ${e.message}"
+            Log.e(TAG, errMsg, e)
+            ShelfDetectionResult(emptyList(), lastError = errMsg)
         } finally {
             try {
                 recognizer?.close()
