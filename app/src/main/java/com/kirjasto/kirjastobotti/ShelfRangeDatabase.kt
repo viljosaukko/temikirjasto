@@ -1,0 +1,89 @@
+package com.kirjasto.kirjastobotti
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.UUID
+
+/** Persistent storage for manually configured physical shelf ranges. */
+class ShelfRangeDatabase(context: Context) {
+    private val preferences = context.getSharedPreferences(
+        "kirjastobotti_shelf_ranges",
+        Context.MODE_PRIVATE
+    )
+
+    fun list(): List<ShelfRange> {
+        val raw = preferences.getString(KEY_RANGES, "[]") ?: "[]"
+        return try {
+            val array = JSONArray(raw)
+            buildList {
+                for (i in 0 until array.length()) {
+                    val o = array.getJSONObject(i)
+                    add(
+                        ShelfRange(
+                            id = o.optString("id"),
+                            text = o.optString("text"),
+                            mapX = if (o.has("mapX")) o.optDouble("mapX") else null,
+                            mapY = if (o.has("mapY")) o.optDouble("mapY") else null,
+                            yaw = if (o.has("yaw")) o.optDouble("yaw") else null
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun upsert(text: String, x: Double, y: Double, yaw: Double, id: String? = null): ShelfRange {
+        val normalized = text.trim().uppercase().replace('–', '-').replace('—', '-')
+        require(ShelfRangeParser.parseRange(normalized) != null) {
+            "Invalid shelf range: $text"
+        }
+        val ranges = list().toMutableList()
+        val actualId = id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+        val shelf = ShelfRange(actualId, normalized, x, y, yaw)
+        val index = ranges.indexOfFirst { it.id == actualId }
+        if (index >= 0) ranges[index] = shelf else ranges.add(shelf)
+        save(ranges)
+        return shelf
+    }
+
+    fun delete(id: String): Boolean {
+        val ranges = list().toMutableList()
+        val removed = ranges.removeAll { it.id == id }
+        if (removed) save(ranges)
+        return removed
+    }
+
+    fun findForFinnaShelf(rawShelf: String): ShelfRange? {
+        val target = ShelfRangeParser.normalizeFinnaShelf(rawShelf) ?: return null
+        val configured = list()
+
+        // IMPORTANT: target is not a database key. It is compared against
+        // every configured physical interval until one interval contains it.
+        return configured.firstOrNull { range ->
+            range.hasLocation && ShelfRangeParser.matches(target, range)
+        }
+    }
+
+    private fun save(ranges: List<ShelfRange>) {
+        val array = JSONArray()
+        ranges.forEach { shelf ->
+            array.put(
+                JSONObject().apply {
+                    put("id", shelf.id)
+                    put("text", shelf.text)
+                    if (shelf.mapX != null) put("mapX", shelf.mapX)
+                    if (shelf.mapY != null) put("mapY", shelf.mapY)
+                    if (shelf.yaw != null) put("yaw", shelf.yaw)
+                }
+            )
+        }
+        preferences.edit().putString(KEY_RANGES, array.toString()).apply()
+    }
+
+    companion object {
+        private const val KEY_RANGES = "ranges"
+    }
+}

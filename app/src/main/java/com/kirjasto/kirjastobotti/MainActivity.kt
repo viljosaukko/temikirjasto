@@ -2,7 +2,9 @@ package com.kirjasto.kirjastobotti
 
 import android.annotation.SuppressLint
 import android.Manifest
+import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
@@ -21,6 +23,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -95,6 +98,8 @@ class MainActivity : ComponentActivity() {
      */
     private lateinit var shelfDatabase: ShelfDatabase
 
+    private lateinit var shelfRangeDatabase: ShelfRangeDatabase
+
     private lateinit var usageRepository: UsageRepository
 
 
@@ -121,6 +126,8 @@ class MainActivity : ComponentActivity() {
         private const val TABLET_UP_ANGLE = 55
 
         private const val TABLET_TILT_SPEED = 1f
+
+        const val SETUP_MODE_PIN = "7421"
     }
 
 
@@ -1246,6 +1253,9 @@ class MainActivity : ComponentActivity() {
         shelfDatabase =
             ShelfDatabase(this)
 
+        shelfRangeDatabase =
+            ShelfRangeDatabase(this)
+
 
         robot.addOnGoToLocationStatusChangedListener(
             navigationListener
@@ -2028,6 +2038,58 @@ class MainActivity : ComponentActivity() {
     }
 
 
+    private fun getStoredSetupPin(): String {
+        val prefs = getSharedPreferences("kirjastobotti_prefs", Context.MODE_PRIVATE)
+        return prefs.getString("setup_pin", SETUP_MODE_PIN) ?: SETUP_MODE_PIN
+    }
+
+    fun isSetupPinValid(pin: String?): Boolean {
+        val entered = pin?.trim().orEmpty()
+        return entered == getStoredSetupPin()
+    }
+
+    fun setSetupPin(currentPin: String, newPin: String): Boolean {
+        // Verify the current PIN first
+        if (getStoredSetupPin() != currentPin) return false
+        val prefs = getSharedPreferences("kirjastobotti_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("setup_pin", newPin).apply()
+        return true
+    }
+
+    fun openSetupModeIfAllowed(pin: String?): Boolean {
+        if (!isSetupPinValid(pin)) {
+            runOnUiThread {
+                Toast.makeText(this, "Väärä PIN-koodi", Toast.LENGTH_SHORT).show()
+            }
+            return false
+        }
+
+        runOnUiThread {
+            val intent = Intent(this, SetupActivity::class.java)
+            startActivity(intent)
+            Toast.makeText(this, "Setup mode avattu", Toast.LENGTH_SHORT).show()
+        }
+        return true
+    }
+
+    private fun requestSetupModeAccess() {
+        val input = EditText(this).apply {
+            hint = "Syötä PIN-koodi"
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Setup mode")
+            .setMessage("Tämä toiminto on vain ylläpidolle.")
+            .setView(input)
+            .setPositiveButton("Avaa") { _, _ ->
+                openSetupModeIfAllowed(input.text?.toString())
+            }
+            .setNegativeButton("Peruuta", null)
+            .show()
+    }
+
     // =========================================================
     // BUTTON HELPERS
     // =========================================================
@@ -2139,37 +2201,49 @@ class MainActivity : ComponentActivity() {
         }
 
         try {
-            val savedPosition =
-                shelfDatabase.get(
-                    shelf
-                )
+            val rangeShelf = shelfRangeDatabase.findForFinnaShelf(shelf)
 
-            if (
-                savedPosition != null
-            ) {
+            if (rangeShelf != null) {
+                val position = Position(
+                    rangeShelf.mapX!!.toFloat(),
+                    rangeShelf.mapY!!.toFloat(),
+                    rangeShelf.yaw!!.toFloat()
+                )
 
                 Toast.makeText(
                     this,
-                    "Hylly löytyy tietokannasta.",
+                    "Hyllyväli löytyi: ${rangeShelf.text}",
                     Toast.LENGTH_SHORT
                 ).show()
 
-
                 goToSavedShelf(
-                    shelf,
-                    savedPosition
+                    rangeShelf.text,
+                    position
                 )
-
 
                 usageRepository.recordRequest(success = true)
                 return
             }
 
+            // Keep the old exact-key lookup as a compatibility fallback for
+            // shelves already taught before the range system was introduced.
+            val savedPosition = shelfDatabase.get(shelf)
+            if (savedPosition != null) {
+                goToSavedShelf(shelf, savedPosition)
+                usageRepository.recordRequest(success = true)
+                return
+            }
 
-            startShelfTeaching(
-                shelf
+            val normalized = ShelfRangeParser.normalizeFinnaShelf(shelf) ?: shelf
+            Toast.makeText(
+                this,
+                "Hyllyväliä ei ole opetettu: $normalized\nLisää väli admin-paneelin Hyllyvälit-välilehdelle.",
+                Toast.LENGTH_LONG
+            ).show()
+            usageRepository.recordRequest(
+                success = false,
+                error = "Hyllyväli puuttuu: $normalized"
             )
-            usageRepository.recordRequest(success = true)
         } catch (exception: Exception) {
             usageRepository.recordRequest(
                 success = false,

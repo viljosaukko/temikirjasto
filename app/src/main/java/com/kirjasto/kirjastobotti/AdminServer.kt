@@ -6,8 +6,8 @@ import android.util.Log
 import com.robotemi.sdk.Robot
 
 import java.io.BufferedInputStream
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.File
+import java.io.IOException
 import java.io.OutputStream
 
 import java.net.InetAddress
@@ -45,6 +45,15 @@ class AdminServer(
     private val libraryConfig =
         LibraryConfig(context)
 
+    private val shelfRangeDatabase =
+        ShelfRangeDatabase(context)
+
+    private val controlKeybindPrefs =
+        context.getSharedPreferences(
+            PREFS_CONTROL_KEYBINDS,
+            Context.MODE_PRIVATE
+        )
+
 
     companion object {
 
@@ -53,6 +62,15 @@ class AdminServer(
 
         const val PORT =
             8080
+
+        private const val MAX_SETUP_UPLOAD_BYTES =
+            25 * 1024 * 1024
+
+        private const val MAX_SETUP_IMAGE_UPLOAD_BYTES =
+            10 * 1024 * 1024
+
+        private const val PREFS_CONTROL_KEYBINDS =
+            "kirjastobotti_control_keybinds"
     }
 
 
@@ -69,16 +87,18 @@ class AdminServer(
     private val workers =
         Executors.newCachedThreadPool()
 
-
     private val safety:
             ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor()
 
+    private val requestTimestamps =
+        Collections.synchronizedMap(
+            mutableMapOf<String, MutableList<Long>>()
+        )
 
     @Volatile
     private var lastCommandAt =
         0L
-
 
     @Volatile
     private var lastX =
@@ -89,6 +109,17 @@ class AdminServer(
     private var lastY =
         0f
 
+
+    private fun allowRequest(clientAddress: String): Boolean {
+        val now = System.currentTimeMillis()
+        val timestamps = requestTimestamps.computeIfAbsent(clientAddress) { mutableListOf() }
+        timestamps.removeAll { now - it > 60_000 }
+        if (timestamps.size >= 60) {
+            return false
+        }
+        timestamps.add(now)
+        return true
+    }
 
     fun start() {
 
@@ -246,36 +277,42 @@ class AdminServer(
                     5000
 
 
-                val reader =
-                    BufferedReader(
-                        InputStreamReader(
-                            BufferedInputStream(
-                                it.getInputStream()
-                            ),
-                            StandardCharsets.UTF_8
-                        )
+                val input =
+                    BufferedInputStream(
+                        it.getInputStream()
                     )
 
 
                 val requestLine =
-                    reader.readLine()
+                    readAsciiLine(input)
                         ?: return
 
 
-                while (
-                    true
-                ) {
+                val headers =
+                    mutableMapOf<String, String>()
 
+                while (true) {
                     val line =
-                        reader.readLine()
+                        readAsciiLine(input)
                             ?: break
 
-
-                    if (
-                        line.isEmpty()
-                    ) {
+                    if (line.isEmpty()) {
                         break
                     }
+
+                    val idx = line.indexOf(':')
+                    if (idx <= 0) continue
+
+                    val key =
+                        line.substring(0, idx)
+                            .trim()
+                            .lowercase()
+
+                    val value =
+                        line.substring(idx + 1)
+                            .trim()
+
+                    headers[key] = value
                 }
 
 
@@ -306,6 +343,16 @@ class AdminServer(
                 val rawTarget =
                     parts[1]
 
+                val clientAddress = socket.inetAddress?.hostAddress ?: "unknown"
+                if (!allowRequest(clientAddress)) {
+                    writeText(
+                        it.getOutputStream(),
+                        429,
+                        "{\"ok\":false,\"error\":\"rate limit exceeded\"}",
+                        "application/json; charset=utf-8"
+                    )
+                    return
+                }
 
                 val target =
                     rawTarget.substringBefore(
@@ -320,6 +367,49 @@ class AdminServer(
                             ""
                         )
                     )
+
+                val contentLength =
+                    headers["content-length"]
+                        ?.toIntOrNull()
+                        ?: 0
+
+                val isSetupZipUpload =
+                    method == "POST" &&
+                            target == "/api/setup-upload-zip"
+
+                val isSetupImageUpload =
+                    method == "POST" &&
+                            target == "/api/setup-upload-image"
+
+                val isSetupBinaryUpload =
+                    isSetupZipUpload || isSetupImageUpload
+
+                if (isSetupZipUpload && contentLength > MAX_SETUP_UPLOAD_BYTES) {
+                    writeText(
+                        it.getOutputStream(),
+                        413,
+                        "{" + "\"ok\":false,\"error\":\"zip file too large\"}",
+                        "application/json; charset=utf-8"
+                    )
+                    return
+                }
+
+                if (isSetupImageUpload && contentLength > MAX_SETUP_IMAGE_UPLOAD_BYTES) {
+                    writeText(
+                        it.getOutputStream(),
+                        413,
+                        "{" + "\"ok\":false,\"error\":\"image file too large\"}",
+                        "application/json; charset=utf-8"
+                    )
+                    return
+                }
+
+                val bodyBytes =
+                    if (isSetupBinaryUpload && contentLength > 0) {
+                        readRequestBody(input, contentLength)
+                    } else {
+                        ByteArray(0)
+                    }
 
 
                 when {
@@ -384,6 +474,96 @@ class AdminServer(
 
 
                     /*
+                     * Physical shelf ranges configured by the library staff.
+                     */
+                    method == "GET" &&
+                            target == "/api/shelf-ranges" -> {
+
+                        val ranges = shelfRangeDatabase.list()
+                        val json = ranges.joinToString(",") { range ->
+                            "{" +
+                                    "\"id\":\"${jsonEscape(range.id)}\"," +
+                                    "\"text\":\"${jsonEscape(range.text)}\"," +
+                                    "\"hasLocation\":${range.hasLocation}" +
+                                    "}"
+                        }
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{\"ranges\":[$json]}",
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+
+                    method == "POST" &&
+                            target == "/api/shelf-ranges/location" -> {
+
+                        val text = query["text"]?.trim().orEmpty()
+                        val id = query["id"]?.trim().orEmpty().ifBlank { null }
+                        val main = context as? MainActivity
+
+                        if (main == null || text.isBlank()) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{\"ok\":false,\"error\":\"range text required\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        try {
+                            val position = robot.getPosition()
+                            val saved = shelfRangeDatabase.upsert(
+                                text = text,
+                                x = position.x.toDouble(),
+                                y = position.y.toDouble(),
+                                yaw = position.yaw.toDouble(),
+                                id = id
+                            )
+
+                            writeText(
+                                it.getOutputStream(),
+                                200,
+                                "{\"ok\":true,\"id\":\"${jsonEscape(saved.id)}\",\"text\":\"${jsonEscape(saved.text)}\",\"x\":${position.x},\"y\":${position.y},\"yaw\":${position.yaw}}",
+                                "application/json; charset=utf-8"
+                            )
+                        } catch (e: IllegalArgumentException) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{\"ok\":false,\"error\":\"${jsonEscape(e.message ?: "invalid range")}\"}",
+                                "application/json; charset=utf-8"
+                            )
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Could not save shelf range", e)
+                            writeText(
+                                it.getOutputStream(),
+                                500,
+                                "{\"ok\":false,\"error\":\"could not save shelf range\"}",
+                                "application/json; charset=utf-8"
+                            )
+                        }
+                    }
+
+
+                    method == "POST" &&
+                            target == "/api/shelf-ranges/delete" -> {
+
+                        val id = query["id"]?.trim().orEmpty()
+                        val removed = id.isNotBlank() && shelfRangeDatabase.delete(id)
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{\"ok\":$removed}",
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+
+                    /*
                      * Book request usage data.
                      */
                     method == "GET" &&
@@ -432,6 +612,321 @@ class AdminServer(
                                 "ok":true
                             }
                             """.trimIndent(),
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+
+                    /*
+                     * Open setup mode after a PIN check.
+                     */
+                    method == "POST" &&
+                           target == "/api/setup-mode" -> {
+
+                       val pin = query["pin"]?.trim().orEmpty()
+                       val main = context as? MainActivity
+
+                       if (main == null || !main.openSetupModeIfAllowed(pin)) {
+                           writeText(
+                               it.getOutputStream(),
+                               403,
+                               """
+                               {
+                                   "ok":false,
+                                   "error":"invalid pin"
+                               }
+                               """.trimIndent(),
+                               "application/json; charset=utf-8"
+                           )
+                           return
+                       }
+
+                       writeText(
+                           it.getOutputStream(),
+                           200,
+                           """
+                           {
+                               "ok":true
+                           }
+                           """.trimIndent(),
+                           "application/json; charset=utf-8"
+                       )
+                    }
+
+                    /*
+                     * Upload a setup ZIP from admin panel and import images for setup mode.
+                     */
+                    method == "POST" &&
+                            target == "/api/setup-upload-zip" -> {
+
+                        val pin = query["pin"]?.trim().orEmpty()
+                        val main = context as? MainActivity
+
+                        if (main == null || !main.isSetupPinValid(pin)) {
+                            writeText(
+                                it.getOutputStream(),
+                                403,
+                                "{" + "\"ok\":false,\"error\":\"invalid pin\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        if (bodyBytes.isEmpty()) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"request body is empty\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val requestedName =
+                            query["filename"]
+                                ?.trim()
+                                .orEmpty()
+
+                        val safeFileName =
+                            sanitizeUploadFileName(
+                                if (requestedName.isBlank()) "kuvat.zip" else requestedName
+                            )
+
+                        if (!safeFileName.lowercase().endsWith(".zip")) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"filename must end with .zip\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val uploadDir = File(context.filesDir, "setup_uploads")
+                        if (!uploadDir.exists() && !uploadDir.mkdirs()) {
+                            writeText(
+                                it.getOutputStream(),
+                                500,
+                                "{" + "\"ok\":false,\"error\":\"could not create upload directory\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val zipFile = File(uploadDir, safeFileName)
+                        zipFile.writeBytes(bodyBytes)
+
+                        val imported =
+                            ShelfRepository(context)
+                                .importZip(zipFile.absolutePath)
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{" +
+                                    "\"ok\":true," +
+                                    "\"importedCount\":${imported.size}" +
+                                    "}",
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+                    /*
+                     * Upload a single setup photo image from admin panel.
+                     */
+                    method == "POST" &&
+                            target == "/api/setup-upload-image" -> {
+
+                        val pin = query["pin"]?.trim().orEmpty()
+                        val main = context as? MainActivity
+
+                        if (main == null || !main.isSetupPinValid(pin)) {
+                            writeText(
+                                it.getOutputStream(),
+                                403,
+                                "{" + "\"ok\":false,\"error\":\"invalid pin\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        if (bodyBytes.isEmpty()) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"request body is empty\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val requestedName =
+                            query["filename"]
+                                ?.trim()
+                                .orEmpty()
+
+                        val safeFileName =
+                            sanitizeUploadFileName(
+                                if (requestedName.isBlank()) {
+                                    "setup_${System.currentTimeMillis()}.jpg"
+                                } else {
+                                    requestedName
+                                }
+                            )
+
+                        val lowerName = safeFileName.lowercase()
+                        val allowed = lowerName.endsWith(".jpg")
+                                || lowerName.endsWith(".jpeg")
+                                || lowerName.endsWith(".png")
+                                || lowerName.endsWith(".webp")
+                        if (!allowed) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"unsupported image extension\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val imagesDir = File(context.filesDir, "shelf_images")
+                        if (!imagesDir.exists() && !imagesDir.mkdirs()) {
+                            writeText(
+                                it.getOutputStream(),
+                                500,
+                                "{" + "\"ok\":false,\"error\":\"could not create image directory\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val imageFile = File(imagesDir, safeFileName)
+                        imageFile.writeBytes(bodyBytes)
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{" +
+                                    "\"ok\":true," +
+                                    "\"file\":\"${jsonEscape(imageFile.name)}\"" +
+                                    "}",
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+                    /*
+                     * Change the stored setup PIN. Requires the current PIN to be provided.
+                     */
+                    method == "POST" && target == "/api/set-setup-pin" -> {
+
+                        val current = query["current"]?.trim().orEmpty()
+                        val newPin = query["new"]?.trim().orEmpty()
+                        val main = context as? MainActivity
+
+                        if (main == null) {
+                            writeText(
+                                it.getOutputStream(),
+                                500,
+                                "{" + "\"ok\":false,\"error\":\"server\"}" ,
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        if (newPin.isBlank()) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"new pin required\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val ok = try { main.setSetupPin(current, newPin) } catch (e: Exception) { false }
+
+                        if (!ok) {
+                            writeText(
+                                it.getOutputStream(),
+                                403,
+                                "{" + "\"ok\":false,\"error\":\"invalid current pin\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{" + "\"ok\":true}",
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+                    /*
+                     * Get manual drive keybinds for keyboard control.
+                     */
+                    method == "GET" &&
+                            target == "/api/control-keybinds" -> {
+
+                        val keybinds = getControlKeybinds()
+                        val json =
+                            "{" +
+                                    "\"forward\":\"${jsonEscape(keybinds["forward"] ?: "w")}\"," +
+                                    "\"left\":\"${jsonEscape(keybinds["left"] ?: "a")}\"," +
+                                    "\"backward\":\"${jsonEscape(keybinds["backward"] ?: "s")}\"," +
+                                    "\"right\":\"${jsonEscape(keybinds["right"] ?: "d")}\"" +
+                                    "}"
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            json,
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+                    /*
+                     * Update manual drive keybinds. Requires setup PIN.
+                     */
+                    method == "POST" &&
+                            target == "/api/control-keybinds" -> {
+
+                        val pin = query["pin"]?.trim().orEmpty()
+                        val main = context as? MainActivity
+                        if (main == null || !main.isSetupPinValid(pin)) {
+                            writeText(
+                                it.getOutputStream(),
+                                403,
+                                "{" + "\"ok\":false,\"error\":\"invalid pin\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        val normalized = normalizeControlKeybinds(
+                            forward = query["forward"],
+                            left = query["left"],
+                            backward = query["backward"],
+                            right = query["right"]
+                        )
+
+                        if (normalized == null) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{" + "\"ok\":false,\"error\":\"invalid keybinds; use unique single letters or digits\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        saveControlKeybinds(normalized)
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{" + "\"ok\":true}",
                             "application/json; charset=utf-8"
                         )
                     }
@@ -782,6 +1277,123 @@ class AdminServer(
     }
 
 
+    private fun readAsciiLine(
+        input: BufferedInputStream
+    ): String? {
+        val bytes = mutableListOf<Byte>()
+
+        while (true) {
+            val raw = input.read()
+            if (raw == -1) {
+                return if (bytes.isEmpty()) null else bytes.toByteArray().toString(StandardCharsets.US_ASCII)
+            }
+
+            val b = raw.toByte()
+            if (b == '\n'.code.toByte()) {
+                break
+            }
+
+            if (b != '\r'.code.toByte()) {
+                bytes.add(b)
+            }
+        }
+
+        return bytes.toByteArray()
+            .toString(StandardCharsets.US_ASCII)
+    }
+
+
+    private fun readRequestBody(
+        input: BufferedInputStream,
+        contentLength: Int
+    ): ByteArray {
+        if (contentLength < 0) {
+            throw IOException("Invalid content-length")
+        }
+
+        val body = ByteArray(contentLength)
+        var offset = 0
+        while (offset < contentLength) {
+            val read = input.read(body, offset, contentLength - offset)
+            if (read < 0) {
+                throw IOException("Unexpected end of request body")
+            }
+            offset += read
+        }
+        return body
+    }
+
+
+    private fun sanitizeUploadFileName(
+        original: String
+    ): String {
+        val stripped =
+            original
+                .replace("\\", "/")
+                .substringAfterLast('/')
+                .trim()
+
+        val cleaned =
+            stripped
+                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+
+        return cleaned.ifBlank { "kuvat.zip" }
+    }
+
+
+    private fun getControlKeybinds(): Map<String, String> {
+        val forward = controlKeybindPrefs.getString("forward", "w") ?: "w"
+        val left = controlKeybindPrefs.getString("left", "a") ?: "a"
+        val backward = controlKeybindPrefs.getString("backward", "s") ?: "s"
+        val right = controlKeybindPrefs.getString("right", "d") ?: "d"
+        return mapOf(
+            "forward" to forward,
+            "left" to left,
+            "backward" to backward,
+            "right" to right
+        )
+    }
+
+    private fun normalizeControlKeybinds(
+        forward: String?,
+        left: String?,
+        backward: String?,
+        right: String?
+    ): Map<String, String>? {
+        val f = normalizeKeybindToken(forward) ?: return null
+        val l = normalizeKeybindToken(left) ?: return null
+        val b = normalizeKeybindToken(backward) ?: return null
+        val r = normalizeKeybindToken(right) ?: return null
+
+        val unique = setOf(f, l, b, r)
+        if (unique.size < 4) return null
+
+        return mapOf(
+            "forward" to f,
+            "left" to l,
+            "backward" to b,
+            "right" to r
+        )
+    }
+
+    private fun normalizeKeybindToken(value: String?): String? {
+        val v = value?.trim()?.lowercase().orEmpty()
+        if (v.length != 1) return null
+        val c = v[0]
+        if (!c.isLetterOrDigit()) return null
+        return v
+    }
+
+    private fun saveControlKeybinds(keybinds: Map<String, String>) {
+        controlKeybindPrefs.edit()
+            .putString("forward", keybinds["forward"])
+            .putString("left", keybinds["left"])
+            .putString("backward", keybinds["backward"])
+            .putString("right", keybinds["right"])
+            .apply()
+    }
+
+
     private fun writeText(
         out: OutputStream,
         status: Int,
@@ -807,8 +1419,17 @@ class AdminServer(
                 400 ->
                     "Bad Request"
 
+                403 ->
+                    "Forbidden"
+
+                413 ->
+                    "Payload Too Large"
+
                 404 ->
                     "Not Found"
+
+                429 ->
+                    "Too Many Requests"
 
                 else ->
                     "Error"
@@ -1439,6 +2060,15 @@ button:active,
 
 </button>
 
+
+<button
+    class="tab"
+    id="shelfRangesTab">
+
+    Shelf ranges
+
+</button>
+
 </div>
 
 
@@ -1466,38 +2096,42 @@ button:active,
 
 
 <button
+    id="driveForwardButton"
     class="w"
-    data-key="w">
-
-    W
-
+    data-action="forward">
+ 
+    Forward
+ 
 </button>
 
 
 <button
+    id="driveLeftButton"
     class="a"
-    data-key="a">
-
-    A
-
+    data-action="left">
+ 
+    Left
+ 
 </button>
 
 
 <button
+    id="driveBackwardButton"
     class="s"
-    data-key="s">
-
-    S
-
+    data-action="backward">
+ 
+    Backward
+ 
 </button>
 
 
 <button
+    id="driveRightButton"
     class="d"
-    data-key="d">
-
-    D
-
+    data-action="right">
+ 
+    Right
+ 
 </button>
 
 
@@ -1584,6 +2218,37 @@ button:active,
 
 <div class="section">
 
+<h2>
+    Drive keyboard keybinds
+</h2>
+
+<p class="hint">
+    Set unique one-character keys for manual drive.
+</p>
+
+<label class="config-label" for="keybindForward">Forward</label>
+<input id="keybindForward" class="config-input" type="text" maxlength="1" autocomplete="off">
+
+<label class="config-label" for="keybindLeft">Left</label>
+<input id="keybindLeft" class="config-input" type="text" maxlength="1" autocomplete="off">
+
+<label class="config-label" for="keybindBackward">Backward</label>
+<input id="keybindBackward" class="config-input" type="text" maxlength="1" autocomplete="off">
+
+<label class="config-label" for="keybindRight">Right</label>
+<input id="keybindRight" class="config-input" type="text" maxlength="1" autocomplete="off">
+
+<button id="saveControlKeybinds" class="config-save" style="margin-top:10px;background:#3a4668">
+    Save keybinds
+</button>
+
+<div id="keybindStatus" class="hint"></div>
+
+</div>
+
+
+<div class="section">
+
 
 <h2>
     Library configuration
@@ -1662,12 +2327,80 @@ button:active,
 <button
     id="checkUpdates"
     class="config-save">
-
+ 
     Check for updates now
-
+ 
+</button>
+ 
+ 
+<button
+    id="setupModeButton"
+    class="config-save"
+    style="margin-top:10px;background:#2d4d66">
+ 
+    Open setup mode
+ 
 </button>
 
+<button
+    id="changePinButton"
+    class="config-save"
+    style="margin-top:10px;background:#66342d">
+ 
+    Change setup PIN
+ 
+</button>
 
+<label
+    class="config-label"
+    for="setupZipFile"
+    style="margin-top:12px">
+ 
+    Setup photos ZIP (.zip)
+ 
+</label>
+
+<input
+    id="setupZipFile"
+    class="config-input"
+    type="file"
+    accept=".zip,application/zip,application/x-zip-compressed">
+
+<button
+    id="uploadSetupZip"
+    class="config-save"
+    style="margin-top:10px;background:#2f6b3f">
+ 
+    Upload setup photos ZIP
+ 
+</button>
+
+<label
+    class="config-label"
+    for="setupPhotoFiles"
+    style="margin-top:12px">
+ 
+    Setup photos (JPG/PNG/WEBP, multiple)
+ 
+</label>
+
+<input
+    id="setupPhotoFiles"
+    class="config-input"
+    type="file"
+    accept="image/jpeg,image/png,image/webp"
+    multiple>
+
+<button
+    id="uploadSetupPhotos"
+    class="config-save"
+    style="margin-top:10px;background:#355f9f">
+ 
+    Upload setup photos
+ 
+</button>
+  
+  
 <div
     id="libraryConfigStatus">
 
@@ -1682,6 +2415,31 @@ button:active,
 
 </div>
 
+
+</div>
+
+
+<div id="shelfRangesPanel" class="panel-hidden">
+
+<h1>
+    Shelf ranges
+</h1>
+
+<p class="hint">
+    Enter the physical alphabetical ranges used by the library. Example: AIK84.2CON-D.
+    The location button stores temi's current coordinates for that exact range.
+</p>
+
+<div class="section">
+
+<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <button id="addShelfRange" class="config-save">+ Add shelf range</button>
+    <span id="shelfRangesStatus" class="hint"></span>
+</div>
+
+<div id="shelfRangesList" style="margin-top:14px"></div>
+
+</div>
 
 </div>
 
@@ -1751,7 +2509,7 @@ button:active,
 <script>
 
 
-const keys =
+const activeActions =
     new Set();
 
 
@@ -1769,6 +2527,13 @@ let controllerActive =
 
 const DEADZONE =
     0.15;
+
+let keybinds = {
+    forward: 'w',
+    left: 'a',
+    backward: 's',
+    right: 'd'
+};
 
 
 /*
@@ -1850,13 +2615,13 @@ function applyDeadzone(
 function send(){
 
     const x =
-        (keys.has('w') ? 1 : 0) +
-        (keys.has('s') ? -1 : 0);
+        (activeActions.has('forward') ? 1 : 0) +
+        (activeActions.has('backward') ? -1 : 0);
 
 
     const y =
-        (keys.has('a') ? 1 : 0) +
-        (keys.has('d') ? -1 : 0);
+        (activeActions.has('left') ? 1 : 0) +
+        (activeActions.has('right') ? -1 : 0);
 
 
     fetch(
@@ -1872,7 +2637,7 @@ function send(){
 
 
 function start(
-    key,
+    action,
     button
 ){
 
@@ -1884,8 +2649,8 @@ function start(
     }
 
 
-    keys.add(
-        key
+    activeActions.add(
+        action
     );
 
 
@@ -1911,12 +2676,12 @@ function start(
 
 
 function end(
-    key,
+    action,
     button
 ){
 
-    keys.delete(
-        key
+    activeActions.delete(
+        action
     );
 
 
@@ -1934,7 +2699,7 @@ function end(
 
 
     if(
-        !keys.size
+        !activeActions.size
     ){
 
         clearInterval(
@@ -1950,13 +2715,13 @@ function end(
 
 document
     .querySelectorAll(
-        'button[data-key]'
+        'button[data-action]'
     )
     .forEach(
         button => {
 
-            const key =
-                button.dataset.key;
+            const action =
+                button.dataset.action;
 
 
             button.onpointerdown =
@@ -1965,7 +2730,7 @@ document
                     event.preventDefault();
 
                     start(
-                        key,
+                        action,
                         button
                     );
                 };
@@ -1977,7 +2742,7 @@ document
                     event.preventDefault();
 
                     end(
-                        key,
+                        action,
                         button
                     );
                 };
@@ -1989,13 +2754,13 @@ document
                     event.preventDefault();
 
                     if(
-                        keys.has(
-                            key
+                        activeActions.has(
+                            action
                         )
                     ){
 
                         end(
-                            key,
+                            action,
                             button
                         );
                     }
@@ -2006,13 +2771,13 @@ document
                 () => {
 
                     if(
-                        keys.has(
-                            key
+                        activeActions.has(
+                            action
                         )
                     ){
 
                         end(
-                            key,
+                            action,
                             button
                         );
                     }
@@ -2024,9 +2789,30 @@ document
 /*
  * Keyboard movement.
  *
- * W, A, S and D work normally inside
- * text fields and do not control the robot.
+ * Keyboard keys work normally inside text fields and
+ * do not control the robot there.
  */
+function actionForKey(
+    key
+){
+    for (const [action, mapped] of Object.entries(keybinds)) {
+        if (mapped === key) {
+            return action;
+        }
+    }
+    return null;
+}
+
+function buttonForAction(
+    action
+){
+    return document.querySelector(
+        'button[data-action="' +
+        action +
+        '"]'
+    );
+}
+
 addEventListener(
     'keydown',
     event => {
@@ -2045,16 +2831,8 @@ addEventListener(
             event.key.toLowerCase();
 
 
-        if(
-            ![
-                'w',
-                'a',
-                's',
-                'd'
-            ].includes(
-                key
-            )
-        ){
+        const action = actionForKey(key);
+        if(!action){
 
             return;
         }
@@ -2064,8 +2842,8 @@ addEventListener(
 
 
         if(
-            keys.has(
-                key
+            activeActions.has(
+                action
             )
         ){
 
@@ -2074,15 +2852,11 @@ addEventListener(
 
 
         const button =
-            document.querySelector(
-                'button[data-key="' +
-                key +
-                '"]'
-            );
+            buttonForAction(action);
 
 
         start(
-            key,
+            action,
             button
         );
     }
@@ -2097,24 +2871,16 @@ addEventListener(
             event.key.toLowerCase();
 
 
-        if(
-            ![
-                'w',
-                'a',
-                's',
-                'd'
-            ].includes(
-                key
-            )
-        ){
+        const action = actionForKey(key);
+        if(!action){
 
             return;
         }
 
 
         if(
-            !keys.has(
-                key
+            !activeActions.has(
+                action
             )
         ){
 
@@ -2126,15 +2892,11 @@ addEventListener(
 
 
         const button =
-            document.querySelector(
-                'button[data-key="' +
-                key +
-                '"]'
-            );
+            buttonForAction(action);
 
 
         end(
-            key,
+            action,
             button
         );
     }
@@ -2520,6 +3282,13 @@ function showPanel(
         );
 
     document
+        .getElementById('shelfRangesPanel')
+        .classList.toggle(
+            'panel-hidden',
+            panel !== 'shelfRanges'
+        );
+
+    document
         .querySelectorAll('.tab')
         .forEach(element => element.classList.remove('tab-active'));
 
@@ -2581,6 +3350,128 @@ document.getElementById('usageTab').addEventListener('click', () => {
     showPanel('usage', 'usageTab');
     loadUsage();
 });
+
+
+document.getElementById('shelfRangesTab').addEventListener('click', () => {
+    showPanel('shelfRanges', 'shelfRangesTab');
+    loadShelfRanges();
+});
+
+
+let shelfRanges = [];
+
+
+function renderShelfRanges(){
+    const list = document.getElementById('shelfRangesList');
+    list.replaceChildren();
+
+    shelfRanges.forEach((range, index) => {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.gap = '10px';
+        row.style.alignItems = 'center';
+        row.style.marginBottom = '10px';
+        row.style.flexWrap = 'wrap';
+
+        const input = document.createElement('input');
+        input.className = 'config-input';
+        input.style.flex = '1 1 260px';
+        input.type = 'text';
+        input.placeholder = 'AIK84.2CON-D';
+        input.value = range.text || '';
+        input.autocomplete = 'off';
+
+        input.addEventListener('change', () => {
+            range.text = input.value;
+        });
+
+        const locationButton = document.createElement('button');
+        locationButton.className = 'config-save';
+        locationButton.textContent = range.hasLocation ? 'Set location again' : 'Set current location';
+        locationButton.style.background = '#2f6b3f';
+        locationButton.addEventListener('click', async () => {
+            const text = input.value.trim();
+            if (!text) {
+                document.getElementById('shelfRangesStatus').textContent = 'Enter a shelf range first.';
+                return;
+            }
+            locationButton.disabled = true;
+            document.getElementById('shelfRangesStatus').textContent = 'Saving current robot position…';
+            try {
+                const params = new URLSearchParams({ text });
+                if (range.id) params.set('id', range.id);
+                const response = await fetch('/api/shelf-ranges/location?' + params.toString(), { method: 'POST' });
+                const result = await response.json();
+                if (!response.ok || !result.ok) throw new Error(result.error || 'Save failed');
+                range.id = result.id;
+                range.text = result.text;
+                range.hasLocation = true;
+                locationButton.textContent = 'Set location again';
+                document.getElementById('shelfRangesStatus').textContent =
+                    'Saved ' + result.text + ' at x=' + Number(result.x).toFixed(2) +
+                    ', y=' + Number(result.y).toFixed(2) + ', yaw=' + Number(result.yaw).toFixed(1);
+            } catch (error) {
+                document.getElementById('shelfRangesStatus').textContent = 'Could not save: ' + error.message;
+            } finally {
+                locationButton.disabled = false;
+            }
+        });
+
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'config-save';
+        deleteButton.textContent = '×';
+        deleteButton.style.background = '#66342d';
+        deleteButton.title = 'Delete shelf range';
+        deleteButton.addEventListener('click', async () => {
+            if (!range.id) {
+                shelfRanges.splice(index, 1);
+                renderShelfRanges();
+                return;
+            }
+            try {
+                const response = await fetch('/api/shelf-ranges/delete?id=' + encodeURIComponent(range.id), { method: 'POST' });
+                const result = await response.json();
+                if (!response.ok || !result.ok) throw new Error('Delete failed');
+                shelfRanges = shelfRanges.filter(item => item.id !== range.id);
+                renderShelfRanges();
+            } catch (error) {
+                document.getElementById('shelfRangesStatus').textContent = 'Could not delete: ' + error.message;
+            }
+        });
+
+        row.appendChild(input);
+        row.appendChild(locationButton);
+        row.appendChild(deleteButton);
+        list.appendChild(row);
+    });
+}
+
+
+function addShelfRangeRow(){
+    shelfRanges.push({ id: '', text: '', hasLocation: false });
+    renderShelfRanges();
+    const inputs = document.querySelectorAll('#shelfRangesList input');
+    const last = inputs[inputs.length - 1];
+    if (last) last.focus();
+}
+
+
+async function loadShelfRanges(){
+    const status = document.getElementById('shelfRangesStatus');
+    try {
+        const response = await fetch('/api/shelf-ranges', { cache: 'no-store' });
+        const result = await response.json();
+        if (!response.ok) throw new Error('Could not load shelf ranges');
+        shelfRanges = result.ranges || [];
+        renderShelfRanges();
+        status.textContent = shelfRanges.length + ' shelf range(s) loaded.';
+    } catch (error) {
+        status.textContent = 'Could not load shelf ranges: ' + error.message;
+    }
+}
+
+
+document.getElementById('addShelfRange').addEventListener('click', addShelfRangeRow);
 
 
 async function loadLibraryConfig(){
@@ -2790,6 +3681,174 @@ document
             }
         }
     );
+
+
+document
+    .getElementById(
+        'setupModeButton'
+    )
+    .addEventListener(
+        'click',
+        async () => {
+
+            const pin =
+                prompt(
+                    'Enter setup PIN',
+                    ''
+                );
+
+            if(
+                pin === null
+            ){
+
+                return;
+            }
+
+            const status =
+                document.getElementById(
+                    'updateStatus'
+                );
+
+            status.textContent =
+                'Opening setup mode...';
+
+            try {
+
+                const response =
+                    await fetch(
+                        '/api/setup-mode?pin=' +
+                        encodeURIComponent(pin),
+                        {
+                            method:'POST'
+                        }
+                    );
+
+                const result =
+                    await response.json();
+
+                if(
+                    !response.ok ||
+                    !result.ok
+                ){
+
+                    throw new Error(
+                        result.error ||
+                        'Setup mode access denied'
+                    );
+                }
+
+                status.textContent =
+                    'Setup mode opened.';
+
+            } catch(
+                e
+            ) {
+
+                status.textContent =
+                    'Setup mode failed: ' +
+                    e.message;
+            }
+        }
+    );
+
+
+    document.getElementById('changePinButton').addEventListener('click', async () => {
+        const current = prompt('Enter current setup PIN', '');
+        if (current === null) return;
+        const next = prompt('Enter new setup PIN', '');
+        if (next === null) return;
+
+        const status = document.getElementById('updateStatus');
+        status.textContent = 'Updating PIN...';
+
+        try {
+            const response = await fetch('/api/set-setup-pin?current=' + encodeURIComponent(current) + '&new=' + encodeURIComponent(next), { method: 'POST' });
+            const result = await response.json();
+            if (!response.ok || !result.ok) throw new Error(result.error || 'Change PIN failed');
+            status.textContent = 'PIN changed successfully.';
+        } catch (e) {
+            status.textContent = 'Change PIN failed: ' + e.message;
+        }
+    });
+
+    document.getElementById('uploadSetupZip').addEventListener('click', async () => {
+        const fileInput = document.getElementById('setupZipFile');
+        const file = fileInput.files && fileInput.files.length > 0 ? fileInput.files[0] : null;
+        const status = document.getElementById('updateStatus');
+
+        if (!file) {
+            status.textContent = 'Choose a ZIP file first.';
+            return;
+        }
+
+        const pin = prompt('Enter setup PIN', '');
+        if (pin === null) return;
+
+        status.textContent = 'Uploading setup ZIP...';
+
+        try {
+            const response = await fetch(
+                '/api/setup-upload-zip?pin=' + encodeURIComponent(pin) + '&filename=' + encodeURIComponent(file.name),
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/zip' },
+                    body: file
+                }
+            );
+
+            const result = await response.json();
+            if (!response.ok || !result.ok) {
+                throw new Error(result.error || 'Upload failed');
+            }
+
+            status.textContent = 'Upload complete: ' + result.importedCount + ' images imported. Open setup mode to analyze.';
+        } catch (e) {
+            status.textContent = 'Setup ZIP upload failed: ' + e.message;
+        }
+    });
+
+    document.getElementById('uploadSetupPhotos').addEventListener('click', async () => {
+        const fileInput = document.getElementById('setupPhotoFiles');
+        const files = fileInput.files ? Array.from(fileInput.files) : [];
+        const status = document.getElementById('updateStatus');
+
+        if (files.length === 0) {
+            status.textContent = 'Choose one or more images first.';
+            return;
+        }
+
+        const pin = prompt('Enter setup PIN', '');
+        if (pin === null) return;
+
+        let uploaded = 0;
+        status.textContent = 'Uploading setup photos (0/' + files.length + ')...';
+
+        for (const file of files) {
+            try {
+                const response = await fetch(
+                    '/api/setup-upload-image?pin=' + encodeURIComponent(pin) + '&filename=' + encodeURIComponent(file.name),
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+                        body: file
+                    }
+                );
+
+                const result = await response.json();
+                if (!response.ok || !result.ok) {
+                    throw new Error(result.error || 'Upload failed');
+                }
+
+                uploaded += 1;
+                status.textContent = 'Uploading setup photos (' + uploaded + '/' + files.length + ')...';
+            } catch (e) {
+                status.textContent = 'Photo upload failed on "' + file.name + '": ' + e.message;
+                return;
+            }
+        }
+
+        status.textContent = 'Photo upload complete: ' + uploaded + ' files uploaded. Open setup mode to analyze.';
+    });
 
 
 async function status(){

@@ -39,6 +39,11 @@
             android:name="@string/metadata_override_stt"
             android:value="true" />
 
+        <!-- ML Kit OCR on-device dependency declaration -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="ocr" />
+
         <!-- temi SDK Settings permission -->
         <meta-data
             android:name="@string/metadata_permissions"
@@ -66,6 +71,12 @@
             </intent-filter>
 
         </activity>
+
+        <activity
+            android:name=".SetupActivity"
+            android:exported="false"
+            android:label="Setup Mode"
+            android:theme="@style/Theme.Kirjastobotti" />
 
     </application>
 
