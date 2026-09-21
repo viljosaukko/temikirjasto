@@ -34,7 +34,7 @@ class SetupActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        repo = ShelfRepository(this)
+        repo = ShelfRepository(this, UsageRepository(this))
 
         // Install uncaught exception handler to prevent silent crash exits and capture stack trace
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
@@ -93,7 +93,7 @@ fun SetupScreen(repo: ShelfRepository) {
                             busy = false
                         }
                     } catch (e: Throwable) {
-                        Log.e("SetupActivity", "Error importing ZIP", e)
+                        repo.reportFailure("Setup ZIP import", e)
                         kotlinx.coroutines.withContext(Dispatchers.Main) {
                             busy = false
                             Toast.makeText(repo.context, "Error importing ZIP: ${e.message}", Toast.LENGTH_LONG).show()
@@ -125,7 +125,7 @@ fun SetupScreen(repo: ShelfRepository) {
                             Toast.makeText(repo.context, "Analyzed ${analyzed.size} image(s).", Toast.LENGTH_SHORT).show()
                         }
                     } catch (e: Throwable) {
-                        Log.e("SetupActivity", "Error analyzing images", e)
+                        repo.reportFailure("Setup image analysis", e)
                         val cause = e.cause ?: e
                         val detail = "${cause.javaClass.simpleName}: ${cause.message ?: e.message ?: "Unknown error"}"
                         kotlinx.coroutines.withContext(Dispatchers.Main) {

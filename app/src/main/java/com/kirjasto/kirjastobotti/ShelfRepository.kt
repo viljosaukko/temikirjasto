@@ -16,7 +16,7 @@ import org.json.JSONObject
  * This is intentionally lightweight: JSON file storage under filesDir/shelves.json
  * and images under filesDir/shelf_images/.
  */
-class ShelfRepository(val context: Context) {
+class ShelfRepository(val context: Context, private val usageRepository: UsageRepository? = null) {
 
     private val TAG = "ShelfRepository"
     private val shelvesFile = File(context.filesDir, "shelves.json")
@@ -27,6 +27,15 @@ class ShelfRepository(val context: Context) {
         if (!shelvesFile.exists()) shelvesFile.createNewFile()
         // Ensure file contains an empty array if empty
         if (shelvesFile.length() == 0L) shelvesFile.writeText("[]")
+    }
+
+    /** Records a setup/OCR failure so it is visible in the LAN admin panel. */
+    fun reportFailure(source: String, throwable: Throwable) {
+        val cause = rootCause(throwable)
+        val detail = cause.message?.takeIf { it.isNotBlank() }
+            ?: cause.javaClass.simpleName
+        Log.e(TAG, "$source: $detail", throwable)
+        usageRepository?.recordFailure("[$source] $detail")
     }
 
     fun listShelves(): List<Shelf> {
@@ -133,8 +142,17 @@ class ShelfRepository(val context: Context) {
 
             try {
                 structuredResult = LibraryShelfOcr.analyzeShelfImageBlocking(file)
+                // Report any partial OCR error to admin panel
+                structuredResult.lastError?.let { ocrErr ->
+                    Log.w(TAG, "OCR partial error for ${file.name}: $ocrErr")
+                    usageRepository?.recordFailure("[OCR] ${file.name}: $ocrErr")
+                }
             } catch (e: Exception) {
-                Log.w(TAG, "Library OCR failed for ${file.name}", e)
+                reportFailure("OCR crash for ${file.name}", e)
+            } catch (e: LinkageError) {
+                // Includes ExceptionInInitializerError, which is thrown when an OCR dependency
+                // or one of LibraryShelfOcr's static patterns cannot be initialized.
+                reportFailure("OCR initialization for ${file.name}", e)
             }
 
             val primaryDetection = structuredResult?.detections?.firstOrNull()
@@ -203,6 +221,14 @@ class ShelfRepository(val context: Context) {
         }
 
         return result
+    }
+
+    private fun rootCause(throwable: Throwable): Throwable {
+        var current = throwable
+        while (current.cause != null && current.cause !== current) {
+            current = current.cause!!
+        }
+        return current
     }
 
     fun upsertShelf(shelf: Shelf) {

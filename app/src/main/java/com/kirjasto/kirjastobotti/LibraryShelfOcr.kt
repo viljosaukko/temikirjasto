@@ -139,8 +139,16 @@ object LibraryShelfOcr {
 
     // Common Finnish library range patterns
     // e.g. B-C, V-Ö, A, 84.2-84.5, etc.
-    private val RANGE_PATTERN = Regex("""(?U)\b([A-ZÅÄÖ0-9]{1,5}(?:\.[0-9]{1,3})?)\s*[-–—‒−]\s*([A-ZÅÄÖ0-9]{1,5}(?:\.[0-9]{1,3})?)\b""", RegexOption.IGNORE_CASE)
-    private val SINGLE_TOKEN_PATTERN = Regex("""(?U)\b([A-ZÅÄÖ]{1,4}|[0-9]{1,3}(?:\.[0-9]{1,3})?)\b""", RegexOption.IGNORE_CASE)
+    // NOTE: (?U) is NOT supported on Android (ICU regex engine). Use explicit lookahead/lookbehind
+    // with character classes that include Finnish letters (Å, Ä, Ö) instead of \b.
+    private val RANGE_PATTERN = Regex(
+        """(?<![A-ZÅÄÖ0-9.])([A-ZÅÄÖ0-9]{1,5}(?:\.[0-9]{1,3})?)\s*[-–—‒−]\s*([A-ZÅÄÖ0-9]{1,5}(?:\.[0-9]{1,3})?)(?![A-ZÅÄÖ0-9.])""",
+        RegexOption.IGNORE_CASE
+    )
+    private val SINGLE_TOKEN_PATTERN = Regex(
+        """(?<![A-ZÅÄÖ0-9])([A-ZÅÄÖ]{1,4}|[0-9]{1,3}(?:\.[0-9]{1,3})?)(?![A-ZÅÄÖ0-9])""",
+        RegexOption.IGNORE_CASE
+    )
 
     /**
      * Process an image file and return structured shelf detections.
