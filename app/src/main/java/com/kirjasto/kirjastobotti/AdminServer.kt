@@ -623,9 +623,9 @@ class AdminServer(
                         val zipFile = File(uploadDir, safeFileName)
                         zipFile.writeBytes(bodyBytes)
 
-                        val imported =
-                            ShelfRepository(context)
-                                .importZip(zipFile.absolutePath)
+                        // Shelf setup is fully manual. Keep this endpoint compatible with
+                        // older admin panels, but do not import or analyse uploaded images.
+                        val imported = emptyList<String>()
 
                         writeText(
                             it.getOutputStream(),

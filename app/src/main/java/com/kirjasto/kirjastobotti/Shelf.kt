@@ -12,25 +12,21 @@ data class Shelf(
     val section: String?,
     val rangeStart: String?,
     val rangeEnd: String?,
-    val imagePath: String?,
+    val contents: String? = null,
     val mapX: Double? = null,
     val mapY: Double? = null,
     val yaw: Double? = null,
     val confidence: Double = 1.0,
     val lastUpdated: Long = System.currentTimeMillis(),
     val active: Boolean = true,
-    val draftNotes: String? = null,
-    val rawText: String? = null,
-    val normalizedText: String? = null,
-    val boundingBox: ShelfBoundingBox? = null,
-    val ocrSuggestion: String? = null,
-    val requiresVerification: Boolean = false
+    val draftNotes: String? = null
 ) {
     fun isReadyForActivation(): Boolean {
         val hasSection = !section.isNullOrBlank()
-        val hasRange = !rangeStart.isNullOrBlank() || !rangeEnd.isNullOrBlank()
+        val hasShelfDescription = !rangeStart.isNullOrBlank() ||
+            !rangeEnd.isNullOrBlank() || !contents.isNullOrBlank()
         val hasPosition = mapX != null && mapY != null && yaw != null
-        return hasSection && hasRange && hasPosition && !imagePath.isNullOrBlank()
+        return hasSection && hasShelfDescription && hasPosition
     }
 
     fun toJson(): JSONObject {
@@ -39,7 +35,7 @@ data class Shelf(
         o.put("section", section)
         o.put("rangeStart", rangeStart)
         o.put("rangeEnd", rangeEnd)
-        o.put("imagePath", imagePath)
+        o.put("contents", contents)
         o.put("mapX", mapX)
         o.put("mapY", mapY)
         o.put("yaw", yaw)
@@ -47,23 +43,17 @@ data class Shelf(
         o.put("lastUpdated", lastUpdated)
         o.put("active", active)
         o.put("draftNotes", draftNotes)
-        if (rawText != null) o.put("rawText", rawText)
-        if (normalizedText != null) o.put("normalizedText", normalizedText)
-        if (boundingBox != null) o.put("boundingBox", boundingBox.toJson())
-        if (ocrSuggestion != null) o.put("ocrSuggestion", ocrSuggestion)
-        o.put("requiresVerification", requiresVerification)
         return o
     }
 
     companion object {
         fun fromJson(o: JSONObject): Shelf {
-            val bbObj = o.optJSONObject("boundingBox")
             return Shelf(
                 id = o.optString("id"),
                 section = if (o.has("section")) o.optString("section") else null,
                 rangeStart = if (o.has("rangeStart")) o.optString("rangeStart") else null,
                 rangeEnd = if (o.has("rangeEnd")) o.optString("rangeEnd") else null,
-                imagePath = if (o.has("imagePath")) o.optString("imagePath") else null,
+                contents = if (o.has("contents")) o.optString("contents") else null,
                 mapX = if (o.has("mapX")) {
                     val v = o.optDouble("mapX")
                     if (v.isNaN()) null else v
@@ -79,12 +69,7 @@ data class Shelf(
                 confidence = o.optDouble("confidence", 1.0),
                 lastUpdated = o.optLong("lastUpdated", System.currentTimeMillis()),
                 active = if (o.has("active")) o.optBoolean("active", true) else true,
-                draftNotes = if (o.has("draftNotes")) o.optString("draftNotes") else null,
-                rawText = if (o.has("rawText")) o.optString("rawText") else null,
-                normalizedText = if (o.has("normalizedText")) o.optString("normalizedText") else null,
-                boundingBox = ShelfBoundingBox.fromJson(bbObj),
-                ocrSuggestion = if (o.has("ocrSuggestion")) o.optString("ocrSuggestion") else null,
-                requiresVerification = o.optBoolean("requiresVerification", false)
+                draftNotes = if (o.has("draftNotes")) o.optString("draftNotes") else null
             )
         }
     }

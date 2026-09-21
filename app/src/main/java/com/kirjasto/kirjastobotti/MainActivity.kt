@@ -98,6 +98,8 @@ class MainActivity : ComponentActivity() {
      */
     private lateinit var shelfDatabase: ShelfDatabase
 
+    private lateinit var manualShelfRepository: ShelfRepository
+
     private lateinit var usageRepository: UsageRepository
 
 
@@ -1206,6 +1208,9 @@ class MainActivity : ComponentActivity() {
         usageRepository =
             UsageRepository(this)
 
+        manualShelfRepository =
+            ShelfRepository(this, usageRepository)
+
 
         robot =
             Robot.getInstance()
@@ -2196,6 +2201,33 @@ class MainActivity : ComponentActivity() {
         }
 
         try {
+            val query = shelf.trim()
+            val manualShelf = manualShelfRepository.listActiveShelves()
+                .map { candidate ->
+                    val values = listOf(candidate.section, candidate.rangeStart, candidate.rangeEnd, candidate.contents)
+                        .filterNotNull()
+                        .filter { it.isNotBlank() }
+                    val score = when {
+                        candidate.id.equals(query, ignoreCase = true) -> 1_000
+                        values.any { it.equals(query, ignoreCase = true) } -> 500
+                        values.any { it.contains(query, ignoreCase = true) } -> 100
+                        else -> 0
+                    }
+                    candidate to score
+                }
+                .filter { (_, score) -> score > 0 }
+                .maxByOrNull { (_, score) -> score }
+                ?.first
+
+            if (manualShelf?.mapX != null && manualShelf.mapY != null && manualShelf.yaw != null) {
+                goToSavedShelf(
+                    manualShelf.id,
+                    Position(manualShelf.mapX.toFloat(), manualShelf.mapY.toFloat(), manualShelf.yaw.toFloat())
+                )
+                usageRepository.recordRequest(success = true)
+                return
+            }
+
             val savedPosition =
                 shelfDatabase.get(
                     shelf
