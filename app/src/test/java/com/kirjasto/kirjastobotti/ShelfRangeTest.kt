@@ -69,4 +69,70 @@ class ShelfRangeTest {
         assertEquals("AIK84.2ANA", ShelfRangeParser.normalizeFinnaShelf("Jännitys 84.2 ANA"))
         assertEquals("AIK84.2ANA", ShelfRangeParser.normalizeFinnaShelf("84.2 ANA"))
     }
+
+    @Test
+    fun normalizesFinnaWithCommas() {
+        assertEquals("AIK82.2KYR", ShelfRangeParser.normalizeFinnaShelf("Aikuiset, 82.2 KYR"))
+        assertEquals("AIK81.04KAN", ShelfRangeParser.normalizeFinnaShelf("Aikuiset, 81.04 KAN"))
+    }
+
+    @Test
+    fun comparesLibraryClassificationsCorrectly() {
+        assertTrue(ShelfRangeParser.compareClassification("81", "81.04") < 0)
+        assertTrue(ShelfRangeParser.compareClassification("81.04", "81.2") < 0)
+        assertTrue(ShelfRangeParser.compareClassification("81.2", "82") < 0)
+        assertTrue(ShelfRangeParser.compareClassification("82", "82.2") < 0)
+        assertTrue(ShelfRangeParser.compareClassification("84.11", "84.2") < 0)
+        assertTrue(ShelfRangeParser.compareClassification("84.2", "84.21") < 0)
+        assertEquals(0, ShelfRangeParser.compareClassification("82.2", "82.2"))
+    }
+
+    @Test
+    fun multiClassRangeWithoutAuthorsMatchesInsideClasses() {
+        val shelf = ShelfRange("1", "AIK81-82.2", 1.0, 2.0, 3.0)
+
+        assertTrue(ShelfRangeParser.matches("AIK81", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK81.04KAN", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK82AAL", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK82.2KYR", shelf))
+        assertFalse(ShelfRangeParser.matches("AIK80.9AAL", shelf))
+        assertFalse(ShelfRangeParser.matches("AIK82.3AAL", shelf))
+    }
+
+    @Test
+    fun multiClassWithAuthorBoundAtEndMatchesAsExpected() {
+        val shelf = ShelfRange("1", "AIK81-82.2A-M", 1.0, 2.0, 3.0)
+
+        // Class 81.04 is strictly inside 81..82.2, so it fits automatically without author check
+        val target81 = ShelfRangeParser.normalizeFinnaShelf("Aikuiset, 81.04 KAN")!!
+        assertTrue(ShelfRangeParser.matches(target81, shelf))
+
+        // Class 82.2 with author KYR: K <= M -> fits!
+        val target82Kyr = ShelfRangeParser.normalizeFinnaShelf("Aikuiset, 82.2 KYR")!!
+        assertTrue(ShelfRangeParser.matches(target82Kyr, shelf))
+
+        // Class 82.2 with author NIS: N > M -> does not fit!
+        val target82Nis = ShelfRangeParser.normalizeFinnaShelf("Aikuiset, 82.2 NIS")!!
+        assertFalse(ShelfRangeParser.matches(target82Nis, shelf))
+
+        // Out of class range bounds
+        assertFalse(ShelfRangeParser.matches("AIK80.9AAL", shelf))
+        assertFalse(ShelfRangeParser.matches("AIK82.3AAL", shelf))
+    }
+
+    @Test
+    fun continuationShelfWithAuthorStartMatchesAsExpected() {
+        val shelf = ShelfRange("1", "AIK82.2N-83", 1.0, 2.0, 3.0)
+
+        // Class 82.2 with author K < N -> does not fit
+        assertFalse(ShelfRangeParser.matches("AIK82.2KYR", shelf))
+
+        // Class 82.2 with author N >= N -> fits!
+        assertTrue(ShelfRangeParser.matches("AIK82.2NIS", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK82.2ÖST", shelf))
+
+        // Class 83 with any author -> fits!
+        assertTrue(ShelfRangeParser.matches("AIK83AAL", shelf))
+        assertFalse(ShelfRangeParser.matches("AIK83.1AAL", shelf))
+    }
 }

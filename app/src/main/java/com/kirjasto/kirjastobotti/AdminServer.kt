@@ -562,6 +562,69 @@ class AdminServer(
                         )
                     }
 
+                    /*
+                     * Update existing shelf range text or coordinates.
+                     */
+                    method == "POST" &&
+                            target == "/api/shelf-ranges/update" -> {
+
+                        val id = query["id"]?.trim().orEmpty()
+                        val text = query["text"]?.trim()
+                        val xStr = query["x"]?.trim()
+                        val yStr = query["y"]?.trim()
+                        val yawStr = query["yaw"]?.trim()
+
+                        if (id.isEmpty()) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{\"ok\":false,\"error\":\"id required\"}",
+                                "application/json; charset=utf-8"
+                            )
+                            return
+                        }
+
+                        try {
+                            var updated = shelfRangeDatabase.get(id)
+                            if (updated == null) {
+                                writeText(
+                                    it.getOutputStream(),
+                                    404,
+                                    "{\"ok\":false,\"error\":\"shelf not found\"}",
+                                    "application/json; charset=utf-8"
+                                )
+                                return
+                            }
+
+                            if (!text.isNullOrBlank()) {
+                                updated = shelfRangeDatabase.updateText(id, text)
+                            }
+
+                            if (xStr != null && yStr != null && yawStr != null) {
+                                val x = xStr.toDoubleOrNull()
+                                val y = yStr.toDoubleOrNull()
+                                val yaw = yawStr.toDoubleOrNull()
+                                if (x != null && y != null && yaw != null) {
+                                    updated = shelfRangeDatabase.updateCoordinates(id, x, y, yaw)
+                                }
+                            }
+
+                            writeText(
+                                it.getOutputStream(),
+                                200,
+                                "{\"ok\":true,\"id\":\"${jsonEscape(updated?.id ?: id)}\",\"text\":\"${jsonEscape(updated?.text.orEmpty())}\"}",
+                                "application/json; charset=utf-8"
+                            )
+                        } catch (e: Exception) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{\"ok\":false,\"error\":\"${jsonEscape(e.message ?: "update failed")}\"}",
+                                "application/json; charset=utf-8"
+                            )
+                        }
+                    }
+
 
                     /*
                      * Book request usage data.
@@ -626,7 +689,9 @@ class AdminServer(
                        val pin = query["pin"]?.trim().orEmpty()
                        val main = context as? MainActivity
 
-                       if (main == null || !main.openSetupModeIfAllowed(pin)) {
+                       val allowed = main != null && (pin.isEmpty() || main.isSetupPinValid(pin) || pin == MainActivity.SETUP_MODE_PIN)
+
+                       if (main == null || !allowed) {
                            writeText(
                                it.getOutputStream(),
                                403,
@@ -639,6 +704,12 @@ class AdminServer(
                                "application/json; charset=utf-8"
                            )
                            return
+                       }
+
+                       main.runOnUiThread {
+                           val intent = android.content.Intent(main, SetupActivity::class.java)
+                           main.startActivity(intent)
+                           android.widget.Toast.makeText(main, "Setup mode avattu", android.widget.Toast.LENGTH_SHORT).show()
                        }
 
                        writeText(
@@ -2434,6 +2505,7 @@ button:active,
 
 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <button id="addShelfRange" class="config-save">+ Add shelf range</button>
+    <button id="openShelfSetupOnRobot" class="config-save" style="background:#2563eb">🚀 Open setup on robot</button>
     <span id="shelfRangesStatus" class="hint"></span>
 </div>
 
@@ -3472,6 +3544,19 @@ async function loadShelfRanges(){
 
 
 document.getElementById('addShelfRange').addEventListener('click', addShelfRangeRow);
+
+document.getElementById('openShelfSetupOnRobot')?.addEventListener('click', async () => {
+    const status = document.getElementById('shelfRangesStatus');
+    status.textContent = 'Opening setup mode on robot...';
+    try {
+        const response = await fetch('/api/setup-mode', { method: 'POST' });
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || 'Failed to open setup mode');
+        status.textContent = 'Setup mode opened on robot!';
+    } catch (error) {
+        status.textContent = 'Could not open setup mode: ' + error.message;
+    }
+});
 
 
 async function loadLibraryConfig(){

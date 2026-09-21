@@ -1,42 +1,68 @@
 package com.kirjasto.kirjastobotti
 
-import android.Manifest
 import android.app.AlertDialog
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
+import androidx.compose.ui.unit.sp
+import com.kirjasto.kirjastobotti.ui.FinnishVirtualKeyboard
+import com.kirjasto.kirjastobotti.ui.ShelfListDialog
+import com.robotemi.sdk.Robot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 /**
- * Simple SetupActivity that imports images from a ZIP in Downloads and runs a lightweight analysis
- * to produce shelf metadata, which is stored in a JSON file.
+ * SetupActivity for Temi robot.
  *
- * This is a prototype implementation of the "Setup Mode" described in the shared design.
+ * Provides a dedicated on-screen Shelf Setup Mode:
+ * - Direct typing with in-app Finnish keyboard (Å, Ä, Ö, numbers, -, .)
+ * - Customizable shortcut buttons above the keyboard
+ * - Single-tap "Save shelf at robot position"
+ * - Shelf list view for deletion, renaming (without repositioning), and coordinate editing
+ * - Optional legacy photo/OCR import
  */
 class SetupActivity : ComponentActivity() {
 
+    private lateinit var shelfRangeDb: ShelfRangeDatabase
+    private lateinit var setupPrefs: ShelfSetupPreferences
     private lateinit var repo: ShelfRepository
+
+    // State for direct physical keyboard / barcode input
+    private var onPhysicalKeyReceived: ((Char) -> Unit)? = null
+    private var onPhysicalBackspaceReceived: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        shelfRangeDb = ShelfRangeDatabase(this)
+        setupPrefs = ShelfSetupPreferences(this)
         repo = ShelfRepository(this, UsageRepository(this))
 
-        // Install uncaught exception handler to prevent silent crash exits and capture stack trace
+        // Crash logging handler
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             Log.e("SetupActivity", "UNCAUGHT CRASH on thread ${thread.name}", throwable)
@@ -49,20 +75,525 @@ class SetupActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme {
-                SetupScreen(repo)
+                MainSetupContainer(
+                    shelfRangeDb = shelfRangeDb,
+                    setupPrefs = setupPrefs,
+                    repo = repo,
+                    onClose = { finish() },
+                    registerKeyCallback = { onChar, onBksp ->
+                        onPhysicalKeyReceived = onChar
+                        onPhysicalBackspaceReceived = onBksp
+                    }
+                )
             }
         }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DEL -> {
+                    onPhysicalBackspaceReceived?.invoke()
+                    return true
+                }
+                else -> {
+                    val unicode = event.unicodeChar
+                    if (unicode != 0 && !Character.isISOControl(unicode)) {
+                        onPhysicalKeyReceived?.invoke(unicode.toChar())
+                        return true
+                    }
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 }
 
 @Composable
+fun MainSetupContainer(
+    shelfRangeDb: ShelfRangeDatabase,
+    setupPrefs: ShelfSetupPreferences,
+    repo: ShelfRepository,
+    onClose: () -> Unit,
+    registerKeyCallback: ((Char) -> Unit, () -> Unit) -> Unit
+) {
+    var showLegacyOcr by remember { mutableStateOf(false) }
+
+    if (showLegacyOcr) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF1E293B))
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Vanha kuva/OCR -asetustila", color = Color.White, fontWeight = FontWeight.Bold)
+                Button(
+                    onClick = { showLegacyOcr = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                ) {
+                    Text("← Takaisin hyllyjen määritykseen", color = Color.White)
+                }
+            }
+            SetupScreen(repo)
+        }
+    } else {
+        RobotShelfSetupScreen(
+            shelfRangeDb = shelfRangeDb,
+            setupPrefs = setupPrefs,
+            onClose = onClose,
+            onOpenLegacyOcr = { showLegacyOcr = true },
+            registerKeyCallback = registerKeyCallback
+        )
+    }
+}
+
+@Composable
+fun RobotShelfSetupScreen(
+    shelfRangeDb: ShelfRangeDatabase,
+    setupPrefs: ShelfSetupPreferences,
+    onClose: () -> Unit,
+    onOpenLegacyOcr: () -> Unit,
+    registerKeyCallback: ((Char) -> Unit, () -> Unit) -> Unit
+) {
+    val context = LocalContext.current
+    var textInput by remember { mutableStateOf("") }
+    var shortcuts by remember { mutableStateOf(setupPrefs.getShortcuts()) }
+    var showShelfListDialog by remember { mutableStateOf(false) }
+    var newShortcutText by remember { mutableStateOf("") }
+    var showAddShortcutDialog by remember { mutableStateOf(false) }
+    var shortcutToDelete by remember { mutableStateOf<String?>(null) }
+    var totalShelvesCount by remember { mutableStateOf(shelfRangeDb.list().size) }
+
+    // Live robot location state
+    var robotX by remember { mutableStateOf<Float?>(null) }
+    var robotY by remember { mutableStateOf<Float?>(null) }
+    var robotYaw by remember { mutableStateOf<Float?>(null) }
+    var locationError by remember { mutableStateOf<String?>(null) }
+
+    fun refreshRobotPosition() {
+        try {
+            val robot = Robot.getInstance()
+            val pos = robot.getPosition()
+            robotX = pos.x
+            robotY = pos.y
+            robotYaw = pos.yaw
+            locationError = null
+        } catch (e: Throwable) {
+            locationError = "Ei yhteyttä robottiin: ${e.message}"
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshRobotPosition()
+        totalShelvesCount = shelfRangeDb.list().size
+    }
+
+    // Register physical keyboard callback
+    DisposableEffect(Unit) {
+        registerKeyCallback(
+            { char -> textInput += char },
+            { if (textInput.isNotEmpty()) textInput = textInput.dropLast(1) }
+        )
+        onDispose { }
+    }
+
+    val normalized = remember(textInput) {
+        textInput.trim().uppercase().replace('–', '-').replace('—', '-')
+    }
+    val parsedRange = remember(normalized) {
+        ShelfRangeParser.parseRange(normalized)
+    }
+    val isValid = parsedRange != null
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF0F172A))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp)
+        ) {
+            // TOP BAR
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "HYLLYJEN MÄÄRITYS",
+                        color = Color.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Black
+                    )
+
+                    // Robot Position Badge
+                    Surface(
+                        color = if (robotX != null) Color(0xFF064E3B) else Color(0xFF334155),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.clickable { refreshRobotPosition() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = if (robotX != null) {
+                                    "📍 X: ${String.format(Locale.US, "%.2f", robotX)} m | Y: ${String.format(Locale.US, "%.2f", robotY)} m | Yaw: ${String.format(Locale.US, "%.0f", robotYaw)}°"
+                                } else {
+                                    "📍 Ei robotin sijaintia (Päivitä)"
+                                },
+                                color = if (robotX != null) Color(0xFF6EE7B7) else Color(0xFF94A3B8),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+                }
+
+                // Action Buttons (Shelf list, Close)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            totalShelvesCount = shelfRangeDb.list().size
+                            showShelfListDialog = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "📚 Hyllylista ($totalShelvesCount)",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    TextButton(
+                        onClick = onOpenLegacyOcr
+                    ) {
+                        Text("Kuvat/OCR", color = Color(0xFF64748B), fontSize = 12.sp)
+                    }
+
+                    Button(
+                        onClick = onClose,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("✕ Sulje", color = Color.White)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // TEXT DISPLAY & INPUT AREA
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        width = 2.dp,
+                        color = when {
+                            textInput.isBlank() -> Color(0xFF334155)
+                            isValid -> Color(0xFF10B981)
+                            else -> Color(0xFFF59E0B)
+                        },
+                        shape = RoundedCornerShape(10.dp)
+                    ),
+                color = Color(0xFF1E293B),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (textInput.isEmpty()) "Aloita kirjoittaminen..." else textInput,
+                                color = if (textInput.isEmpty()) Color(0xFF64748B) else Color.White,
+                                fontSize = 28.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            // Blinking cursor
+                            Text(
+                                text = " |",
+                                color = Color(0xFF38BDF8),
+                                fontSize = 28.sp,
+                                fontWeight = FontWeight.Light
+                            )
+                        }
+
+                        // Validation guidance
+                        if (textInput.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            if (isValid && parsedRange != null) {
+                                val details = buildString {
+                                    append("✓ Kelvollinen: Osasto ${parsedRange.section} | Luokka ${parsedRange.start.classNumber}")
+                                    if (parsedRange.start.authorStart != null || parsedRange.end?.authorEnd != null) {
+                                        append(" | Tekijät: ${parsedRange.start.authorStart ?: "A"} – ${parsedRange.end?.authorEnd ?: parsedRange.start.authorStart}")
+                                    }
+                                }
+                                Text(
+                                    text = details,
+                                    color = Color(0xFF34D399),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            } else {
+                                Text(
+                                    text = "ℹ Esimerkki: AIK84.2A-CAN, AIK84.2CON-D tai AIK81-82.2",
+                                    color = Color(0xFFFBBF24),
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (textInput.isNotEmpty()) {
+                            Button(
+                                onClick = { textInput = "" },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Text("Tyhjennä", color = Color.White, fontSize = 13.sp)
+                            }
+                        }
+
+                        // Prominent "Save Shelf at Robot Position" button
+                        Button(
+                            onClick = {
+                                if (!isValid) {
+                                    Toast.makeText(context, "Syötä kelvollinen hyllyväli ensin (esim. AIK84.2CON-D)", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+                                refreshRobotPosition()
+                                val x = robotX ?: 0.0f
+                                val y = robotY ?: 0.0f
+                                val yaw = robotYaw ?: 0.0f
+
+                                try {
+                                    val saved = shelfRangeDb.upsert(
+                                        text = normalized,
+                                        x = x.toDouble(),
+                                        y = y.toDouble(),
+                                        yaw = yaw.toDouble()
+                                    )
+                                    totalShelvesCount = shelfRangeDb.list().size
+                                    Toast.makeText(
+                                        context,
+                                        "Tallennettu hylly ${saved.text} sijaintiin (${String.format(Locale.US, "%.2f", x)}, ${String.format(Locale.US, "%.2f", y)})",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                    textInput = ""
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Tallennusvirhe: ${e.message}", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            enabled = isValid,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF059669),
+                                disabledContainerColor = Color(0xFF1E3A2F)
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = "💾 Tallenna robotin sijaintiin",
+                                color = if (isValid) Color.White else Color(0xFF6EE7B7).copy(alpha = 0.5f),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // SHORTCUT BUTTONS ROW (Above the keyboard)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Pikapainikkeet:",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(end = 2.dp)
+                )
+
+                shortcuts.forEach { shortcut ->
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .pointerInput(shortcut) {
+                                detectTapGestures(
+                                    onTap = { textInput += shortcut },
+                                    onLongPress = { shortcutToDelete = shortcut }
+                                )
+                            },
+                        color = Color(0xFF1E293B),
+                        shape = RoundedCornerShape(6.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.4f))
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = shortcut,
+                                color = Color(0xFF38BDF8),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // Add shortcut button
+                Surface(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable {
+                            newShortcutText = textInput.trim().uppercase()
+                            showAddShortcutDialog = true
+                        },
+                    color = Color(0xFF0369A1),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "+ Lisää",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // FINNISH VIRTUAL KEYBOARD
+            FinnishVirtualKeyboard(
+                onKeyPress = { key -> textInput += key },
+                onBackspace = {
+                    if (textInput.isNotEmpty()) {
+                        textInput = textInput.dropLast(1)
+                    }
+                },
+                onClear = { textInput = "" },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        // --- Dialog: Shelf List Management ---
+        if (showShelfListDialog) {
+            ShelfListDialog(
+                database = shelfRangeDb,
+                onDismiss = {
+                    totalShelvesCount = shelfRangeDb.list().size
+                    showShelfListDialog = false
+                }
+            )
+        }
+
+        // --- Dialog: Add New Shortcut ---
+        if (showAddShortcutDialog) {
+            AlertDialog(
+                onDismissRequest = { showAddShortcutDialog = false },
+                title = { Text("Lisää pikapainike", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Pikapainike syöttää tekstin yhdellä painalluksella (esim. AIK, 84.2, LAP).", fontSize = 13.sp, color = Color.Gray)
+                        OutlinedTextField(
+                            value = newShortcutText,
+                            onValueChange = { newShortcutText = it },
+                            label = { Text("Teksti") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        val cleaned = newShortcutText.trim().uppercase()
+                        if (cleaned.isNotBlank()) {
+                            shortcuts = setupPrefs.addShortcut(cleaned)
+                            Toast.makeText(context, "Pikapainike '$cleaned' lisätty", Toast.LENGTH_SHORT).show()
+                        }
+                        showAddShortcutDialog = false
+                    }) {
+                        Text("Lisää")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAddShortcutDialog = false }) {
+                        Text("Peruuta")
+                    }
+                }
+            )
+        }
+
+        // --- Dialog: Delete Shortcut Confirmation ---
+        if (shortcutToDelete != null) {
+            val target = shortcutToDelete!!
+            AlertDialog(
+                onDismissRequest = { shortcutToDelete = null },
+                title = { Text("Poista pikapainike?", fontWeight = FontWeight.Bold) },
+                text = { Text("Haluatko poistaa pikapainikkeen '$target'?") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            shortcuts = setupPrefs.removeShortcut(target)
+                            shortcutToDelete = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                    ) {
+                        Text("Poista")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { shortcutToDelete = null }) {
+                        Text("Peruuta")
+                    }
+                }
+            )
+        }
+    }
+}
+
+// -------------------------------------------------------------
+// Legacy Photo & OCR Prototype Screen (Retained for compatibility)
+// -------------------------------------------------------------
+
+@Composable
 fun SetupScreen(repo: ShelfRepository) {
     val scope = rememberCoroutineScope()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
     var detected by remember { mutableStateOf<List<Shelf>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
-
-    // Track which shelves user has accepted for saving
     var acceptedIds by remember { mutableStateOf(setOf<String>()) }
     var draftOnly by remember { mutableStateOf(false) }
 
@@ -221,7 +752,7 @@ fun SetupScreen(repo: ShelfRepository) {
 @Composable
 fun EditableShelfRow(original: Shelf, repo: ShelfRepository, acceptedIds: Set<String>, onAcceptedChange: (Set<String>) -> Unit, onEdit: (Shelf) -> Unit) {
     val scope = rememberCoroutineScope()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
 
     var section by remember(original.id) { mutableStateOf(original.section ?: "") }
     var rangeStart by remember(original.id) { mutableStateOf(original.rangeStart ?: "") }
@@ -264,12 +795,11 @@ fun EditableShelfRow(original: Shelf, repo: ShelfRepository, acceptedIds: Set<St
                 })
             }
 
-            // Low Confidence Warning Alert Box
             if (isLowConfidence) {
                 Spacer(Modifier.height(6.dp))
                 androidx.compose.material3.Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
+                    shape = RoundedCornerShape(6.dp),
                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                 ) {
                     Column(modifier = Modifier.padding(8.dp)) {
@@ -287,7 +817,7 @@ fun EditableShelfRow(original: Shelf, repo: ShelfRepository, acceptedIds: Set<St
                         if (!currentSuggestion.isNullOrBlank()) {
                             Spacer(Modifier.height(4.dp))
                             Row(
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                                verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text(
@@ -362,7 +892,7 @@ fun EditableShelfRow(original: Shelf, repo: ShelfRepository, acceptedIds: Set<St
             Text("Raw OCR Output: ", style = MaterialTheme.typography.labelSmall)
             androidx.compose.material3.Surface(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
+                shape = RoundedCornerShape(4.dp),
                 color = MaterialTheme.colorScheme.surface
             ) {
                 Text(
@@ -414,7 +944,7 @@ fun EditableShelfRow(original: Shelf, repo: ShelfRepository, acceptedIds: Set<St
                 Button(onClick = {
                     scope.launch(Dispatchers.IO) {
                         try {
-                            val robot = com.robotemi.sdk.Robot.getInstance()
+                            val robot = Robot.getInstance()
                             val pos = robot.getPosition()
                             val updatedShelf = original.copy(
                                 section = section.ifBlank { null },

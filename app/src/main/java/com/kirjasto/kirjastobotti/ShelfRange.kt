@@ -15,23 +15,35 @@ data class ShelfRange(
         get() = mapX != null && mapY != null && yaw != null
 }
 
-data class ParsedShelfRange(
-    val prefix: String,
-    val start: String,
-    val end: String?
+data class ShelfEndpoint(
+    val classNumber: String,
+    val authorStart: String? = null,
+    val authorEnd: String? = null
 )
 
+data class ParsedShelfRange(
+    val section: String,
+    val start: ShelfEndpoint,
+    val end: ShelfEndpoint?
+) {
+    val prefix: String get() = "$section${start.classNumber}"
+}
+
 data class ParsedShelfTarget(
-    val prefix: String,
-    val key: String
-)
+    val section: String,
+    val classNumber: String,
+    val authorKey: String
+) {
+    val prefix: String get() = "$section$classNumber"
+    val key: String get() = authorKey
+}
 
 /**
  * Normalises OUTI/Finna shelf text and resolves it against physical shelf
  * intervals. The important distinction is:
  *
- *   Finna value  = a target, e.g. AIK84.2ANA
- *   admin value  = an interval, e.g. AIK84.2A or AIK84.2CON-D
+ *   Finna value  = a target, e.g. AIK84.2ANA or AIK82.2KYR
+ *   admin value  = an interval, e.g. AIK84.2A, AIK84.2CON-D, AIK81-82.2, or AIK81-82.2A-M
  *
  * We NEVER look for the complete target as an exact database key.
  */
@@ -40,34 +52,96 @@ object ShelfRangeParser {
     /** Finnish alphabetical order used for author shelf keys. */
     private const val FINNISH_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ"
 
-    /* Prefix ends in the classification number, e.g. AIK84.2. */
-    private val rangeRegex = Regex(
-        "^(.+?\\d(?:\\.\\d+)?)([A-ZÅÄÖ]{1,16})(?:-([A-ZÅÄÖ]{1,16}))?$",
-        RegexOption.IGNORE_CASE
-    )
-
     private val targetRegex = Regex(
-        "^(.+?\\d(?:\\.\\d+)?)([A-ZÅÄÖ]{1,16})$",
+        "^([A-ZÅÄÖ]{2,8})(\\d{1,3}(?:\\.\\d{1,3})?)([A-ZÅÄÖ]{1,16})?$",
         RegexOption.IGNORE_CASE
     )
 
+    private val classNumberRegex = Regex("(\\d{1,3}(?:\\.\\d{1,3})?)")
+
+    /**
+     * Parses a shelf range configured by library staff, supporting:
+     *   - Single-class author bucket: AIK84.2A
+     *   - Single-class author range:  AIK84.2A-CAN, AIK84.2CON-D, AIK84.2E-H
+     *   - Single-class full bucket:   AIK84.2
+     *   - Multi-class range:          AIK81-82.2
+     *   - Multi-class + author bound: AIK81-82.2A-M, AIK81-82.2M, AIK82.2N-83, AIK82.2N-83A-M
+     */
     fun parseRange(raw: String): ParsedShelfRange? {
         val value = normalizeRaw(raw) ?: return null
-        val match = rangeRegex.matchEntire(value) ?: return null
-        val prefix = match.groupValues[1].uppercase()
-        val start = match.groupValues[2].uppercase()
-        val end = match.groupValues[3].takeIf { it.isNotBlank() }?.uppercase()
-        if (prefix.isBlank() || start.isBlank()) return null
-        return ParsedShelfRange(prefix, start, end)
+        val sectionMatch = Regex("^([A-ZÅÄÖ]{2,8})").find(value) ?: return null
+        val section = sectionMatch.groupValues[1]
+
+        var remainder = value.substring(section.length)
+        // If section is repeated after hyphen (e.g. AIK81-AIK82.2), clean it
+        remainder = remainder.replace("-$section", "-")
+
+        val classMatches = classNumberRegex.findAll(remainder).toList()
+        if (classMatches.isEmpty() || classMatches.size > 2) return null
+
+        if (classMatches.size == 1) {
+            val classNumber = classMatches[0].groupValues[1]
+            val afterClass = remainder.substring(classMatches[0].range.last + 1).trim()
+
+            return if (afterClass.isBlank()) {
+                ParsedShelfRange(
+                    section = section,
+                    start = ShelfEndpoint(classNumber = classNumber),
+                    end = null
+                )
+            } else if (afterClass.contains('-')) {
+                val parts = afterClass.split('-')
+                val startAuthor = parts.getOrNull(0)?.ifBlank { null }
+                val endAuthor = parts.getOrNull(1)?.ifBlank { null }
+                if (startAuthor == null && endAuthor == null) return null
+                ParsedShelfRange(
+                    section = section,
+                    start = ShelfEndpoint(classNumber = classNumber, authorStart = startAuthor),
+                    end = ShelfEndpoint(classNumber = classNumber, authorEnd = endAuthor)
+                )
+            } else {
+                ParsedShelfRange(
+                    section = section,
+                    start = ShelfEndpoint(classNumber = classNumber, authorStart = afterClass),
+                    end = null
+                )
+            }
+        }
+
+        // classMatches.size == 2
+        val startClass = classMatches[0].groupValues[1]
+        val endClass = classMatches[1].groupValues[1]
+
+        val between = remainder.substring(classMatches[0].range.last + 1, classMatches[1].range.first)
+        val startAuthor = between.trimEnd('-').ifBlank { null }
+
+        val afterEnd = remainder.substring(classMatches[1].range.last + 1).trim()
+        val (endAuthorStart, endAuthorEnd) = if (afterEnd.contains('-')) {
+            val parts = afterEnd.split('-')
+            Pair(parts.getOrNull(0)?.ifBlank { null }, parts.getOrNull(1)?.ifBlank { null })
+        } else {
+            Pair(null, afterEnd.ifBlank { null })
+        }
+
+        return ParsedShelfRange(
+            section = section,
+            start = ShelfEndpoint(classNumber = startClass, authorStart = startAuthor),
+            end = ShelfEndpoint(
+                classNumber = endClass,
+                authorStart = endAuthorStart,
+                authorEnd = endAuthorEnd
+            )
+        )
     }
 
     /**
      * Converts e.g.
      *   "Jännitys Aikuiset 84.2 ANA" -> "AIK84.2ANA"
+     *   "Aikuiset, 82.2 KYR"        -> "AIK82.2KYR"
+     *   "Aikuiset, 81.04 KAN"       -> "AIK81.04KAN"
      *   "AIK Aikuiset 84.2 CÖN"      -> "AIK84.2CÖN"
      *
-     * Genre labels are intentionally discarded. The only data retained after
-     * the classification number is the author/cutter key used for shelving.
+     * Genre labels are intentionally discarded.
      */
     fun normalizeFinnaShelf(raw: String): String? {
         val cleaned = raw
@@ -79,7 +153,10 @@ object ShelfRangeParser {
 
         if (cleaned.isBlank()) return null
 
-        val tokens = cleaned.split(' ').filter { it.isNotBlank() }
+        val tokens = cleaned.split(' ')
+            .map { it.trim().trimEnd(',', ';', ':') }
+            .filter { it.isNotBlank() }
+
         val aiKIndex = tokens.indexOfFirst { it == "AIK" }
         val adultLabelIndex = tokens.indexOfFirst { it == "AIKUISET" }
         val sectionIndex = if (aiKIndex >= 0) aiKIndex else adultLabelIndex
@@ -133,9 +210,9 @@ object ShelfRangeParser {
     private fun normalizeCompact(cleaned: String): String? {
         val compact = cleaned.replace(" ", "")
         val match = Regex(
-            "^([A-ZÅÄÖ]{2,8}\\d{1,3}(?:\\.\\d{1,3})?)([A-ZÅÄÖ]{1,16})$"
+            "^([A-ZÅÄÖ]{2,8})(\\d{1,3}(?:\\.\\d{1,3})?)([A-ZÅÄÖ]{1,16})?$"
         ).find(compact) ?: return null
-        return match.groupValues[1] + match.groupValues[2]
+        return match.groupValues[1] + match.groupValues[2] + match.groupValues[3]
     }
 
     private fun normalizeRaw(raw: String): String? {
@@ -146,6 +223,35 @@ object ShelfRangeParser {
             .replace('—', '-')
             .replace(Regex("\\s+"), "")
         return value.ifBlank { null }
+    }
+
+    /**
+     * Compares decimal library classifications (YKL/Dewey), e.g.:
+     *   81 < 81.04 < 81.2 < 82 < 82.2 < 84.11 < 84.2 < 84.21
+     */
+    fun compareClassification(aRaw: String, bRaw: String): Int {
+        val aClean = aRaw.trim().replace(',', '.')
+        val bClean = bRaw.trim().replace(',', '.')
+
+        val aParts = aClean.split('.')
+        val bParts = bClean.split('.')
+
+        val aMain = aParts[0].toIntOrNull() ?: 0
+        val bMain = bParts[0].toIntOrNull() ?: 0
+        if (aMain != bMain) {
+            return aMain.compareTo(bMain)
+        }
+
+        val aSub = if (aParts.size > 1) aParts[1] else ""
+        val bSub = if (bParts.size > 1) bParts[1] else ""
+
+        val minLen = minOf(aSub.length, bSub.length)
+        for (i in 0 until minLen) {
+            if (aSub[i] != bSub[i]) {
+                return aSub[i].compareTo(bSub[i])
+            }
+        }
+        return aSub.length.compareTo(bSub.length)
     }
 
     /** Returns negative/zero/positive according to Finnish shelf alphabet order. */
@@ -172,32 +278,60 @@ object ShelfRangeParser {
         val value = raw.trim().uppercase().replace(Regex("\\s+"), "")
         val match = targetRegex.matchEntire(value) ?: return null
         return ParsedShelfTarget(
-            prefix = match.groupValues[1],
-            key = match.groupValues[2]
+            section = match.groupValues[1],
+            classNumber = match.groupValues[2],
+            authorKey = match.groupValues.getOrNull(3).orEmpty()
         )
     }
 
     /**
      * Checks whether a target belongs to this physical shelf interval.
      *
-     * AIK84.2A means the whole A surname bucket.
-     * AIK84.2A-CAN means A <= key <= CAN (inclusive, covers CAN / CANTH).
-     * AIK84.2CON-D means CON <= key <= D (inclusive of D, covers CON, CÖN, and D authors like DOY).
-     * AIK84.2E-H means E <= key <= H (inclusive of H, covers ERK, HEI, HUU).
+     * Handles:
+     *   - Single-class author bucket: AIK84.2A
+     *   - Single-class author range:  AIK84.2A-CAN, AIK84.2CON-D, AIK84.2E-H
+     *   - Multi-class without author: AIK81-82.2
+     *   - Multi-class + author bound: AIK81-82.2A-M, AIK82.2N-83
      */
     fun matches(targetRaw: String, range: ShelfRange): Boolean {
         val parsed = range.parsed ?: return false
         val target = parseTarget(targetRaw) ?: return false
 
-        if (target.prefix != parsed.prefix) return false
-        if (compareFinnish(target.key, parsed.start) < 0) return false
+        if (target.section != parsed.section) return false
 
-        val end = parsed.end
-        if (end == null) {
-            return target.key.startsWith(parsed.start)
+        // Check start bound
+        val startClassCmp = compareClassification(target.classNumber, parsed.start.classNumber)
+        if (startClassCmp < 0) return false
+
+        if (startClassCmp == 0) {
+            val startAuthor = parsed.start.authorStart
+            if (startAuthor != null) {
+                if (compareFinnish(target.authorKey, startAuthor) < 0) return false
+            }
         }
 
-        // Inclusive upper bound: either strictly before end, or starting with the end prefix
-        return compareFinnish(target.key, end) < 0 || target.key.startsWith(end)
+        // Check end bound
+        val end = parsed.end
+        if (end == null) {
+            if (startClassCmp != 0) return false
+            val startAuthor = parsed.start.authorStart
+            if (startAuthor == null) return true
+            return target.authorKey.startsWith(startAuthor)
+        }
+
+        val endClassCmp = compareClassification(target.classNumber, end.classNumber)
+        if (endClassCmp > 0) return false
+        if (endClassCmp < 0) return true
+
+        // target.classNumber == end.classNumber
+        val endAuthorStart = end.authorStart
+        if (endAuthorStart != null) {
+            if (compareFinnish(target.authorKey, endAuthorStart) < 0) return false
+        }
+
+        val endAuthor = end.authorEnd
+        if (endAuthor == null) return true
+
+        return compareFinnish(target.authorKey, endAuthor) < 0 || target.authorKey.startsWith(endAuthor)
     }
 }

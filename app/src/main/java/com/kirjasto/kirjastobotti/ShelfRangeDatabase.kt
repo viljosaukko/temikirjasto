@@ -56,6 +56,42 @@ class ShelfRangeDatabase(context: Context) {
         return removed
     }
 
+    /**
+     * Updates the text/name of an existing shelf without modifying its positioning.
+     */
+    fun updateText(id: String, newText: String): ShelfRange? {
+        val normalized = newText.trim().uppercase().replace('–', '-').replace('—', '-')
+        require(ShelfRangeParser.parseRange(normalized) != null) {
+            "Invalid shelf range: $newText"
+        }
+        val ranges = list().toMutableList()
+        val index = ranges.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val existing = ranges[index]
+        val updated = existing.copy(text = normalized)
+        ranges[index] = updated
+        save(ranges)
+        return updated
+    }
+
+    /**
+     * Updates the coordinates (x, y, yaw) of an existing shelf without altering its text.
+     */
+    fun updateCoordinates(id: String, x: Double, y: Double, yaw: Double): ShelfRange? {
+        val ranges = list().toMutableList()
+        val index = ranges.indexOfFirst { it.id == id }
+        if (index < 0) return null
+        val existing = ranges[index]
+        val updated = existing.copy(mapX = x, mapY = y, yaw = yaw)
+        ranges[index] = updated
+        save(ranges)
+        return updated
+    }
+
+    fun get(id: String): ShelfRange? {
+        return list().firstOrNull { it.id == id }
+    }
+
     fun findForFinnaShelf(rawShelf: String): ShelfRange? {
         val target = ShelfRangeParser.normalizeFinnaShelf(rawShelf) ?: return null
         val configured = list()
