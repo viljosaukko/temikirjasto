@@ -3035,6 +3035,67 @@ class MainActivity : ComponentActivity() {
                 }
 
 
+                /*
+                 * Show holdings from only the configured library branch.
+                 * Finna renders each branch's availability as a
+                 * ".no-branches" element, including availability loaded
+                 * after a record is expanded.
+                 */
+                function filterAvailability() {
+
+                    // Do not hide anything if a branch has not been set.
+                    if (!libraryBranchName) {
+                        return;
+                    }
+
+
+                    const locations =
+                        document.querySelectorAll(
+                            ".no-branches"
+                        );
+
+
+                    for (
+                        let i = 0;
+                        i < locations.length;
+                        i++
+                    ) {
+
+                        const location =
+                            locations[i];
+
+
+                        const branch =
+                            location.querySelector(
+                                ".branch"
+                            );
+
+
+                        // Leave non-holding content alone.
+                        if (!branch) {
+                            continue;
+                        }
+
+
+                        const branchName =
+                            cleanText(
+                                branch.innerText ||
+                                branch.textContent
+                            );
+
+
+                        const belongsToSelectedLibrary =
+                            branchName.includes(
+                                libraryBranchName
+                            );
+
+
+                        location.hidden =
+                            !belongsToSelectedLibrary;
+                    }
+                }
+
+
                 function replaceReservationButton(
                     button
                 ) {
@@ -3193,6 +3254,9 @@ class MainActivity : ComponentActivity() {
 
 
                 function scanForLoginButtons() {
+
+                    filterAvailability();
+
 
                     const elements =
                         document.querySelectorAll(
