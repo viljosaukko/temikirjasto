@@ -1444,19 +1444,10 @@ class MainActivity : ComponentActivity() {
                     }
 
 
-                    if (
-                        webView.canGoBack()
-                    ) {
-
-                        webView.goBack()
-
-                    } else {
-
-                        isEnabled =
-                            false
-
-                        onBackPressedDispatcher
-                            .onBackPressed()
+                    // The catalogue owns its screen stack so this has the same
+                    // behaviour as its persistent, labelled Back control.
+                    if (::webView.isInitialized) {
+                        webView.evaluateJavascript("window.kirjastobottiBack && window.kirjastobottiBack()", null)
                     }
                 }
             }
@@ -1596,82 +1587,12 @@ class MainActivity : ComponentActivity() {
         )
 
 
-        webView.webViewClient =
-            object : WebViewClient() {
-
-                override fun shouldOverrideUrlLoading(
-                    view: WebView?,
-                    request: WebResourceRequest?
-                ): Boolean {
-
-                    val url =
-                        request?.url
-                            ?.toString()
-                            ?: return false
-
-
-                    val filteredUrl =
-                        applyAlwaysFilter(
-                            url
-                        )
-
-
-                    if (
-                        filteredUrl != url
-                    ) {
-
-                        view?.loadUrl(
-                            filteredUrl
-                        )
-
-                        return true
-                    }
-
-
-                    return false
-                }
-
-
-                override fun onPageFinished(
-                    view: WebView?,
-                    url: String?
-                ) {
-
-                    super.onPageFinished(
-                        view,
-                        url
-                    )
-
-
-                    if (
-                        url != null &&
-                        url.startsWith(
-                            libraryConfig.websiteUrl
-                        )
-                    ) {
-
-                        val filteredUrl =
-                            applyAlwaysFilter(
-                                url
-                            )
-
-
-                        if (
-                            filteredUrl != url
-                        ) {
-
-                            view?.loadUrl(
-                                filteredUrl
-                            )
-
-                            return
-                        }
-                    }
-
-
-                    customizeWebsite()
-                }
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                // Official-catalogue pages are an explicit, labelled fallback.
+                return false
             }
+        }
 
 
         webView.webChromeClient =
@@ -1687,20 +1608,20 @@ class MainActivity : ComponentActivity() {
         )
 
 
-        createNavigationOverlay(
-            root
-        )
+        // This is shown only while Temi is actively navigating.
+        createNavigationOverlay(root)
 
 
         setContentView(
             root
         )
 
-
-        webView.loadUrl(
-            applyAlwaysFilter(
-                libraryConfig.websiteUrl
-            )
+        webView.loadDataWithBaseURL(
+            libraryConfig.websiteUrl,
+            TemiCatalogueUi.html(libraryConfig.libraryBranchName, libraryConfig.websiteUrl),
+            "text/html",
+            "UTF-8",
+            null
         )
     }
 
@@ -3494,6 +3415,13 @@ class MainActivity : ComponentActivity() {
                     message,
                     Toast.LENGTH_SHORT
                 ).show()
+            }
+        }
+
+        @JavascriptInterface
+        fun stopGuidance() {
+            runOnUiThread {
+                if (goingToShelf || returningHome) cancelNavigation()
             }
         }
     }
