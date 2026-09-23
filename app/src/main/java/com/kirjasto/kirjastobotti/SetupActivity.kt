@@ -166,6 +166,11 @@ fun RobotShelfSetupScreen(
     var showAddShortcutDialog by remember { mutableStateOf(false) }
     var shortcutToDelete by remember { mutableStateOf<String?>(null) }
     var totalShelvesCount by remember { mutableStateOf(shelfRangeDb.list().size) }
+    var preclasses by remember { mutableStateOf(setupPrefs.getPreclasses()) }
+    var selectedPreclass by remember { mutableStateOf<String?>(null) }
+    var preclassMenuExpanded by remember { mutableStateOf(false) }
+    var showAddPreclassDialog by remember { mutableStateOf(false) }
+    var newPreclassText by remember { mutableStateOf("") }
 
     // Live robot location state
     var robotX by remember { mutableStateOf<Float?>(null) }
@@ -343,7 +348,9 @@ fun RobotShelfSetupScreen(
                                 val details = buildString {
                                     append("✓ Kelvollinen: Osasto ${parsedRange.section} | Luokka ${parsedRange.start.classNumber}")
                                     if (parsedRange.start.authorStart != null || parsedRange.end?.authorEnd != null) {
-                                        append(" | Tekijät: ${parsedRange.start.authorStart ?: "A"} – ${parsedRange.end?.authorEnd ?: parsedRange.start.authorStart}")
+                                        val from = parsedRange.start.authorStart ?: "…"
+                                        val to = parsedRange.end?.authorEnd ?: "…"
+                                        append(" | Tekijät: $from – $to")
                                     }
                                 }
                                 Text(
@@ -354,7 +361,7 @@ fun RobotShelfSetupScreen(
                                 )
                             } else {
                                 Text(
-                                    text = "ℹ Esimerkki: AIK84.2A-CAN, AIK84.2CON-D tai AIK81-82.2",
+                                    text = "ℹ Esimerkki: AIK84.2A-CAN, AIKMYC14-17 tai AIK81-82.2",
                                     color = Color(0xFFFBBF24),
                                     fontSize = 12.sp
                                 )
@@ -390,7 +397,9 @@ fun RobotShelfSetupScreen(
                                         text = normalized,
                                         x = x.toDouble(),
                                         y = y.toDouble(),
-                                        yaw = yaw.toDouble()
+                                        yaw = yaw.toDouble(),
+                                        preclass = selectedPreclass,
+                                        setPreclass = true
                                     )
                                     totalShelvesCount = shelfRangeDb.list().size
                                     Toast.makeText(
@@ -418,6 +427,82 @@ fun RobotShelfSetupScreen(
                                 fontSize = 15.sp
                             )
                         }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Esiluokka:",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Box {
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { preclassMenuExpanded = true },
+                        color = Color(0xFF1E293B),
+                        shape = RoundedCornerShape(8.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.45f))
+                    ) {
+                        Text(
+                            text = selectedPreclass ?: "Ei esiluokkaa",
+                            color = if (selectedPreclass == null) Color(0xFF94A3B8) else Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = preclassMenuExpanded,
+                        onDismissRequest = { preclassMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Ei esiluokkaa") },
+                            onClick = {
+                                selectedPreclass = null
+                                preclassMenuExpanded = false
+                            }
+                        )
+                        preclasses.forEach { label ->
+                            DropdownMenuItem(
+                                text = { Text(label) },
+                                onClick = {
+                                    selectedPreclass = label
+                                    preclassMenuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+                Surface(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            newPreclassText = ""
+                            showAddPreclassDialog = true
+                        },
+                    color = Color(0xFF0369A1),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "+",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -515,6 +600,50 @@ fun RobotShelfSetupScreen(
                 onDismiss = {
                     totalShelvesCount = shelfRangeDb.list().size
                     showShelfListDialog = false
+                }
+            )
+        }
+
+        // --- Dialog: Add esiluokka ---
+        if (showAddPreclassDialog) {
+            AlertDialog(
+                onDismissRequest = { showAddPreclassDialog = false },
+                title = { Text("Lisää esiluokka", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Esiluokka on Finna-hyllytiedon alkuosa, esim. Jännitys.",
+                            fontSize = 13.sp,
+                            color = Color.Gray
+                        )
+                        OutlinedTextField(
+                            value = newPreclassText,
+                            onValueChange = { newPreclassText = it },
+                            label = { Text("Esiluokka") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        val cleaned = newPreclassText.trim()
+                        if (cleaned.isNotBlank()) {
+                            preclasses = setupPrefs.addPreclass(cleaned)
+                            selectedPreclass = preclasses.firstOrNull {
+                                it.equals(cleaned, ignoreCase = true)
+                            } ?: cleaned
+                            Toast.makeText(context, "Esiluokka '$cleaned' lisätty", Toast.LENGTH_SHORT).show()
+                        }
+                        showAddPreclassDialog = false
+                    }) {
+                        Text("Lisää")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAddPreclassDialog = false }) {
+                        Text("Peruuta")
+                    }
                 }
             )
         }

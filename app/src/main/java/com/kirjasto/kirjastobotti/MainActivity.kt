@@ -79,6 +79,10 @@ class MainActivity : ComponentActivity() {
     private var goingToShelf = false
     private var returningHome = false
 
+    // The currently requested item is shown when Temi reaches its shelf.
+    private var requestedBookTitle: String? = null
+    private var requestedBookShelf: String? = null
+
 
     /*
      * True when we are currently teaching temi
@@ -1444,10 +1448,10 @@ class MainActivity : ComponentActivity() {
                     }
 
 
-                    // The catalogue owns its screen stack so this has the same
-                    // behaviour as its persistent, labelled Back control.
                     if (::webView.isInitialized) {
-                        webView.evaluateJavascript("window.kirjastobottiBack && window.kirjastobottiBack()", null)
+                        if (webView.canGoBack()) {
+                            webView.goBack()
+                        }
                     }
                 }
             }
@@ -1487,7 +1491,7 @@ class MainActivity : ComponentActivity() {
             if (
                 existingFilters.any {
                     it ==
-                            libraryConfig.alwaysFilter
+                            LibraryConfig.SAARI_FILTER
                 }
             ) {
 
@@ -1499,7 +1503,7 @@ class MainActivity : ComponentActivity() {
                 .buildUpon()
                 .appendQueryParameter(
                     "filter[]",
-                    libraryConfig.alwaysFilter
+                    LibraryConfig.SAARI_FILTER
                 )
                 .build()
                 .toString()
@@ -1589,8 +1593,22 @@ class MainActivity : ComponentActivity() {
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                // Official-catalogue pages are an explicit, labelled fallback.
+                val url = request?.url?.toString() ?: return false
+                val filteredUrl = applyAlwaysFilter(url)
+
+                // Keep the configured branch filter when the user follows
+                // links within the official Finna catalogue.
+                if (filteredUrl != url) {
+                    view?.loadUrl(filteredUrl)
+                    return true
+                }
+
                 return false
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                customizeWebsite()
             }
         }
 
@@ -1616,12 +1634,9 @@ class MainActivity : ComponentActivity() {
             root
         )
 
-        webView.loadDataWithBaseURL(
-            libraryConfig.websiteUrl,
-            TemiCatalogueUi.html(libraryConfig.libraryBranchName, libraryConfig.websiteUrl),
-            "text/html",
-            "UTF-8",
-            null
+        // Finna remains the UI. We only add the robot-specific controls to it.
+        webView.loadUrl(
+            applyAlwaysFilter(libraryConfig.websiteUrl)
         )
     }
 
@@ -1639,7 +1654,7 @@ class MainActivity : ComponentActivity() {
 
 
         navigationOverlay.setBackgroundColor(
-            0xCC05080C.toInt()
+            0xE6F3F7F8.toInt()
         )
 
 
@@ -1665,21 +1680,21 @@ class MainActivity : ComponentActivity() {
 
         navigationCard.setPadding(
             55,
-            40,
+            36,
             55,
-            45
+            38
         )
 
 
         navigationCard.background =
             roundedBackground(
-                0xFF101820.toInt(),
-                32f
+                Color.WHITE,
+                8f
             )
 
 
         navigationCard.elevation =
-            30f
+            12f
 
 
         val cardParams =
@@ -1717,11 +1732,11 @@ class MainActivity : ComponentActivity() {
 
 
         navigationTitle.textSize =
-            38f
+            32f
 
 
         navigationTitle.setTextColor(
-            Color.WHITE
+            0xFF123B4A.toInt()
         )
 
 
@@ -1749,11 +1764,11 @@ class MainActivity : ComponentActivity() {
 
 
         navigationShelf.textSize =
-            28f
+            26f
 
 
         navigationShelf.setTextColor(
-            0xFF8DD8FF.toInt()
+            0xFF087F7B.toInt()
         )
 
 
@@ -1786,11 +1801,11 @@ class MainActivity : ComponentActivity() {
 
 
         navigationStatus.textSize =
-            22f
+            20f
 
 
         navigationStatus.setTextColor(
-            0xFFB8C4CC.toInt()
+            0xFF38515B.toInt()
         )
 
 
@@ -2042,8 +2057,8 @@ class MainActivity : ComponentActivity() {
 
         button.background =
             roundedBackground(
-                0xFF1976A8.toInt(),
-                18f
+                0xFF087F7B.toInt(),
+                6f
             )
 
 
@@ -2068,7 +2083,7 @@ class MainActivity : ComponentActivity() {
 
 
         button.setTextColor(
-            Color.WHITE
+            0xFF123B4A.toInt()
         )
 
 
@@ -2078,8 +2093,8 @@ class MainActivity : ComponentActivity() {
 
         button.background =
             roundedBackground(
-                0xFF26343D.toInt(),
-                18f
+                0xFFE1ECEE.toInt(),
+                6f
             )
 
 
@@ -2110,7 +2125,8 @@ class MainActivity : ComponentActivity() {
     // =========================================================
 
     private fun requestShelf(
-        shelf: String
+        shelf: String,
+        bookTitle: String = ""
     ) {
 
         if (shelf.isBlank()) {
@@ -2120,6 +2136,9 @@ class MainActivity : ComponentActivity() {
             )
             return
         }
+
+        requestedBookTitle = bookTitle.trim().ifBlank { null }
+        requestedBookShelf = shelf
 
         try {
             val rangeShelf = shelfRangeDatabase.findForFinnaShelf(shelf)
@@ -2564,7 +2583,15 @@ class MainActivity : ComponentActivity() {
 
 
         navigationStatus.text =
-            "Tarvitsetko vielä avustusta?"
+            listOfNotNull(
+                requestedBookTitle?.let {
+                    "Tästä hyllystä löydät kirjan $it"
+                },
+                requestedBookShelf?.let {
+                    "signumilla $it"
+                },
+                "Tarvitsetko vielä avustusta?"
+            ).joinToString("\n\n")
 
 
         saveShelfButton.visibility =
@@ -2737,11 +2764,11 @@ class MainActivity : ComponentActivity() {
     private fun customizeWebsite() {
 
         /*
-         * Escape the configured library name before putting it
+         * Escape the fixed branch name before putting it
          * into the JavaScript string.
          */
         val escapedLibraryBranchName =
-            libraryConfig.libraryBranchName
+            LibraryConfig.SAARI_BRANCH_NAME
                 .replace("\\", "\\\\")
                 .replace("\"", "\\\"")
                 .replace("\n", "\\n")
@@ -2771,7 +2798,7 @@ class MainActivity : ComponentActivity() {
 
 
                 /*
-                 * Library branch comes from LibraryConfig.kt.
+                 * Kirjastobotti is dedicated to one branch.
                  *
                  * Example:
                  * "Oulun keskustakirjasto Saari"
@@ -2825,37 +2852,9 @@ class MainActivity : ComponentActivity() {
                     return null;
                 }
 
-
-                function getBookId(record) {
-
-                    if (!record) {
-                        return "";
-                    }
-
-
-                    const hiddenId =
-                        record.querySelector(
-                            ".hiddenId"
-                        );
-
-
-                    if (!hiddenId) {
-                        return "";
-                    }
-
-
-                    return (
-                        hiddenId.value ||
-                        hiddenId.getAttribute("value") ||
-                        ""
-                    );
-                }
-
-
                 /*
                  * Same old shelf logic as getSaariShelf(),
-                 * except the branch name now comes from
-                 * LibraryConfig.kt.
+                 * for the fixed Saari branch.
                  */
                 function getLibraryShelf(record) {
 
@@ -2957,18 +2956,12 @@ class MainActivity : ComponentActivity() {
 
 
                 /*
-                 * Show holdings from only the configured library branch.
+                 * Show holdings from the branch where this robot operates.
                  * Finna renders each branch's availability as a
                  * ".no-branches" element, including availability loaded
                  * after a record is expanded.
                  */
                 function filterAvailability() {
-
-                    // Do not hide anything if a branch has not been set.
-                    if (!libraryBranchName) {
-                        return;
-                    }
-
 
                     const locations =
                         document.querySelectorAll(
@@ -3017,6 +3010,101 @@ class MainActivity : ComponentActivity() {
                 }
 
 
+                function getBookTitle(record) {
+
+                    if (!record) {
+                        return "";
+                    }
+
+                    const title = record.querySelector(
+                        ".record-title a, .title a, h2 a, h3 a, .record-title, .title, h2, h3"
+                    );
+
+                    return title
+                        ? (title.innerText || title.textContent || "")
+                            .replace(/näytä lisätietoa/ig, "")
+                            .replace(/show more information/ig, "")
+                            .replace(/\s+/g, " ")
+                            .trim()
+                        : "";
+                }
+
+
+                function isReservationButton(text) {
+
+                    return text.includes(
+                        "kirjaudu sisään varataksesi"
+                    ) || text.includes(
+                        "login to place a hold"
+                    );
+                }
+
+
+                function headerItem(element) {
+
+                    return element
+                        ? element.closest("li, .nav-item, .dropdown") || element
+                        : null;
+                }
+
+
+                function arrangeHeaderActions() {
+
+                    const header = document.querySelector(
+                        "header, .navbar, .main-header"
+                    ) || document;
+
+                    const actions = header.querySelectorAll("a, button");
+                    let login = null;
+                    let lukujaljet = null;
+                    let palaute = null;
+
+                    for (let i = 0; i < actions.length; i++) {
+                        const action = actions[i];
+                        const text = cleanText(
+                            action.innerText || action.textContent
+                        );
+
+                        if (
+                            text === "kirjaudu sisään" ||
+                            text === "log in" ||
+                            text === "login"
+                        ) {
+                            login = action;
+                        } else if (text.includes("lukujäljet")) {
+                            lukujaljet = action;
+                        } else if (text.includes("palaute")) {
+                            palaute = action;
+                        }
+                    }
+
+                    const language = header.querySelector(
+                        "[class*='language'], [id*='language'], [class*='lang'], [id*='lang']"
+                    );
+                    const loginItem = headerItem(login);
+                    const languageItem = headerItem(language);
+
+                    if (loginItem) {
+                        if (languageItem && languageItem !== loginItem) {
+                            loginItem.replaceWith(languageItem);
+                        } else {
+                            loginItem.remove();
+                        }
+                    }
+
+                    const readingItem = headerItem(lukujaljet);
+                    const feedbackItem = headerItem(palaute);
+
+                    if (
+                        readingItem &&
+                        feedbackItem &&
+                        readingItem !== feedbackItem
+                    ) {
+                        readingItem.after(feedbackItem);
+                    }
+                }
+
+
                 function replaceReservationButton(
                     button
                 ) {
@@ -3043,11 +3131,7 @@ class MainActivity : ComponentActivity() {
                         );
 
 
-                    if (
-                        !text.includes(
-                            "kirjaudu sisään varataksesi"
-                        )
-                    ) {
+                    if (!isReservationButton(text)) {
 
                         return;
                     }
@@ -3073,12 +3157,6 @@ class MainActivity : ComponentActivity() {
                     if (!shelf) {
                         return;
                     }
-
-
-                    const bookId =
-                        getBookId(
-                            record
-                        );
 
 
                     const cleanButton =
@@ -3145,7 +3223,12 @@ class MainActivity : ComponentActivity() {
 
 
                     cleanButton.textContent =
-                        "Vie hyllylle";
+                        document.documentElement.lang
+                            .toLowerCase()
+                            .startsWith("en")
+                            || text.includes("login to place a hold")
+                            ? "Take to shelf"
+                            : "Vie hyllylle";
 
 
                     button.replaceWith(
@@ -3165,7 +3248,8 @@ class MainActivity : ComponentActivity() {
 
 
                             Android.requestShelf(
-                                shelf
+                                shelf,
+                                getBookTitle(record)
                             );
 
                         },
@@ -3177,6 +3261,7 @@ class MainActivity : ComponentActivity() {
                 function scanForLoginButtons() {
 
                     filterAvailability();
+                    arrangeHeaderActions();
 
 
                     const elements =
@@ -3202,11 +3287,7 @@ class MainActivity : ComponentActivity() {
                             );
 
 
-                        if (
-                            !text.includes(
-                                "kirjaudu sisään varataksesi"
-                            )
-                        ) {
+                        if (!isReservationButton(text)) {
 
                             continue;
                         }
@@ -3260,12 +3341,43 @@ class MainActivity : ComponentActivity() {
                         overflow-x: hidden !important;
                     }
 
+                    button, .btn, input[type="submit"], input[type="button"] {
+                        border-radius: 6px !important;
+                    }
+
+                    input[type="text"], input[type="search"], select {
+                        border-radius: 6px !important;
+                    }
+
+                    input[type="text"]:focus, input[type="search"]:focus, select:focus {
+                        border-color: #087f7b !important;
+                        box-shadow: 0 0 0 2px rgba(8, 127, 123, .16) !important;
+                    }
+
+                    /* Only Finna's outer record node is a card. Its nested
+                       result and media elements deliberately stay untouched. */
+                    .record-container {
+                        border: 1px solid #d5e2e5 !important;
+                        border-radius: 10px !important;
+                        box-shadow: 0 2px 6px rgba(20, 43, 54, .08) !important;
+                        margin-bottom: 14px !important;
+                        overflow: hidden;
+                    }
+
                     .kirjastobotti-button {
                         display: inline-block !important;
                         visibility: visible !important;
                         opacity: 1 !important;
                         pointer-events: auto !important;
                         cursor: pointer !important;
+                        background: #087f7b !important;
+                        border: 0 !important;
+                        border-radius: 6px !important;
+                        color: #ffffff !important;
+                        font-weight: 700 !important;
+                        min-height: 44px !important;
+                        padding: 8px 14px !important;
+                        margin-bottom: 16px !important;
                     }
 
                 `;
@@ -3391,13 +3503,15 @@ class MainActivity : ComponentActivity() {
 
         @JavascriptInterface
         fun requestShelf(
-            shelf: String
+            shelf: String,
+            bookTitle: String
         ) {
 
             runOnUiThread {
 
                 this@MainActivity.requestShelf(
-                    shelf
+                    shelf,
+                    bookTitle
                 )
             }
         }

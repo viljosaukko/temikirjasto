@@ -47,6 +47,45 @@ class ShelfSetupPreferences(context: Context) {
         return DEFAULT_SHORTCUTS
     }
 
+    fun getPreclasses(): List<String> {
+        val raw = prefs.getString(KEY_PRECLASSES, null) ?: return emptyList()
+        return try {
+            val array = JSONArray(raw)
+            val list = mutableListOf<String>()
+            for (i in 0 until array.length()) {
+                val item = array.optString(i)?.trim().orEmpty()
+                if (item.isNotBlank()) list.add(item)
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun addPreclass(label: String): List<String> {
+        val cleaned = label.trim()
+        if (cleaned.isBlank()) return getPreclasses()
+        val current = getPreclasses().toMutableList()
+        if (current.none { it.equals(cleaned, ignoreCase = true) }) {
+            current.add(cleaned)
+            savePreclasses(current)
+        }
+        return current
+    }
+
+    fun removePreclass(label: String): List<String> {
+        val current = getPreclasses().toMutableList()
+        current.removeAll { it.equals(label.trim(), ignoreCase = true) }
+        savePreclasses(current)
+        return current
+    }
+
+    private fun savePreclasses(preclasses: List<String>) {
+        val array = JSONArray()
+        preclasses.forEach { array.put(it) }
+        prefs.edit().putString(KEY_PRECLASSES, array.toString()).apply()
+    }
+
     private fun save(shortcuts: List<String>) {
         val array = JSONArray()
         shortcuts.forEach { array.put(it) }
@@ -56,6 +95,7 @@ class ShelfSetupPreferences(context: Context) {
     companion object {
         private const val PREFS_NAME = "kirjastobotti_shelf_setup_prefs"
         private const val KEY_SHORTCUTS = "setup_shortcuts"
+        private const val KEY_PRECLASSES = "setup_preclasses"
 
         val DEFAULT_SHORTCUTS = listOf("AIK", "84.2", "LAP", "NUO", "-", ".")
     }

@@ -481,10 +481,14 @@ class AdminServer(
 
                         val ranges = shelfRangeDatabase.list()
                         val json = ranges.joinToString(",") { range ->
+                            val preclassJson = range.normalizedPreclass?.let {
+                                ",\"preclass\":\"${jsonEscape(it)}\""
+                            } ?: ",\"preclass\":null"
                             "{" +
                                     "\"id\":\"${jsonEscape(range.id)}\"," +
                                     "\"text\":\"${jsonEscape(range.text)}\"," +
                                     "\"hasLocation\":${range.hasLocation}" +
+                                    preclassJson +
                                     "}"
                         }
 
@@ -1016,18 +1020,6 @@ class AdminServer(
                                     jsonEscape(
                                         libraryConfig.websiteUrl
                                     ) +
-                                    "\"," +
-
-                                    "\"alwaysFilter\":\"" +
-                                    jsonEscape(
-                                        libraryConfig.alwaysFilter
-                                    ) +
-                                    "\"," +
-
-                                    "\"libraryBranchName\":\"" +
-                                    jsonEscape(
-                                        libraryConfig.libraryBranchName
-                                    ) +
                                     "\"" +
                                     "}"
 
@@ -1054,18 +1046,6 @@ class AdminServer(
                                 .orEmpty()
 
 
-                        val alwaysFilter =
-                            query["alwaysFilter"]
-                                ?.trim()
-                                .orEmpty()
-
-
-                        val libraryBranchName =
-                            query["libraryBranchName"]
-                                ?.trim()
-                                .orEmpty()
-
-
                         if (
                             websiteUrl.isBlank()
                         ) {
@@ -1082,33 +1062,10 @@ class AdminServer(
                                 "application/json; charset=utf-8"
                             )
 
-                        } else if (
-                            libraryBranchName.isBlank()
-                        ) {
-
-                            writeText(
-                                it.getOutputStream(),
-                                400,
-                                """
-                                {
-                                    "ok":false,
-                                    "error":"libraryBranchName is required"
-                                }
-                                """.trimIndent(),
-                                "application/json; charset=utf-8"
-                            )
-
                         } else {
 
                             libraryConfig.update(
-                                websiteUrl =
-                                    websiteUrl,
-
-                                alwaysFilter =
-                                    alwaysFilter,
-
-                                libraryBranchName =
-                                    libraryBranchName
+                                websiteUrl = websiteUrl
                             )
 
 
@@ -2354,36 +2311,10 @@ button:active,
     autocomplete="off">
 
 
-<label
-    class="config-label"
-    for="libraryAlwaysFilter">
-
-    Finna building filter
-
-</label>
-
-
-<input
-    id="libraryAlwaysFilter"
-    class="config-input"
-    type="text"
-    autocomplete="off">
-
-
-<label
-    class="config-label"
-    for="libraryBranchName">
-
-    Library branch name
-
-</label>
-
-
-<input
-    id="libraryBranchName"
-    class="config-input"
-    type="text"
-    autocomplete="off">
+<p class="hint">
+    This robot always searches and guides visitors in
+    Oulun keskustakirjasto Saari.
+</p>
 
 
 <button
@@ -3589,23 +3520,6 @@ async function loadLibraryConfig(){
             .value =
             config.websiteUrl || '';
 
-
-        document
-            .getElementById(
-                'libraryAlwaysFilter'
-            )
-            .value =
-            config.alwaysFilter || '';
-
-
-        document
-            .getElementById(
-                'libraryBranchName'
-            )
-            .value =
-            config.libraryBranchName || '';
-
-
         status.textContent =
             'Configuration loaded.';
 
@@ -3645,20 +3559,6 @@ document
                             document
                                 .getElementById(
                                     'libraryWebsiteUrl'
-                                )
-                                .value,
-
-                        alwaysFilter:
-                            document
-                                .getElementById(
-                                    'libraryAlwaysFilter'
-                                )
-                                .value,
-
-                        libraryBranchName:
-                            document
-                                .getElementById(
-                                    'libraryBranchName'
                                 )
                                 .value
                     }

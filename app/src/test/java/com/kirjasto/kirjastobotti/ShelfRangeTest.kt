@@ -2,6 +2,7 @@ package com.kirjasto.kirjastobotti
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -134,5 +135,142 @@ class ShelfRangeTest {
         // Class 83 with any author -> fits!
         assertTrue(ShelfRangeParser.matches("AIK83AAL", shelf))
         assertFalse(ShelfRangeParser.matches("AIK83.1AAL", shelf))
+    }
+
+    @Test
+    fun yklOrdersByDigitsNotByIntegerValue() {
+        assertTrue(ShelfRangeParser.compareClassification("29", "3") < 0)
+        assertTrue(ShelfRangeParser.compareClassification("10", "2") < 0)
+        assertTrue(ShelfRangeParser.compareClassification("3", "30") < 0)
+        assertTrue(ShelfRangeParser.compareClassification("14", "17") < 0)
+        assertTrue(ShelfRangeParser.compareClassification("84.2", "9") < 0)
+    }
+
+    @Test
+    fun extractsPreclassFromFinnaCallNumber() {
+        assertEquals("JÄNNITYS", ShelfRangeParser.extractPreclass("Jännitys Aikuiset 84.2 MYC"))
+        assertEquals("JÄNNITYS", ShelfRangeParser.extractPreclass("Jännitys 84.2 ANA"))
+        assertNull(ShelfRangeParser.extractPreclass("Aikuiset, 82.2 KYR"))
+        assertNull(ShelfRangeParser.extractPreclass("AIK Aikuiset 84.2 CON"))
+        assertNull(ShelfRangeParser.extractPreclass("84.2 ANA"))
+    }
+
+    @Test
+    fun parsesAuthorLettersBeforeClassAsStartBound() {
+        val parsed = ShelfRangeParser.parseRange("AIKMYC14-17")
+        assertEquals("AIK", parsed!!.section)
+        assertEquals("14", parsed.start.classNumber)
+        assertEquals("MYC", parsed.start.authorStart)
+        assertEquals("17", parsed.end!!.classNumber)
+        assertNull(parsed.end.authorEnd)
+    }
+
+    @Test
+    fun parsesAuthorLettersBeforeClassAndEndAuthor() {
+        val parsed = ShelfRangeParser.parseRange("AIKMYC14-15JUS")
+        assertEquals("AIK", parsed!!.section)
+        assertEquals("14", parsed.start.classNumber)
+        assertEquals("MYC", parsed.start.authorStart)
+        assertEquals("15", parsed.end!!.classNumber)
+        assertEquals("JUS", parsed.end.authorEnd)
+    }
+
+    @Test
+    fun existingCompactFictionRangesStillParseAsBefore() {
+        val conToD = ShelfRangeParser.parseRange("AIK84.2CON-D")!!
+        assertEquals("AIK", conToD.section)
+        assertEquals("84.2", conToD.start.classNumber)
+        assertEquals("CON", conToD.start.authorStart)
+        assertEquals("D", conToD.end!!.authorEnd)
+
+        val multi = ShelfRangeParser.parseRange("AIK82.2N-83")!!
+        assertEquals("82.2", multi.start.classNumber)
+        assertEquals("N", multi.start.authorStart)
+        assertEquals("83", multi.end!!.classNumber)
+    }
+
+    @Test
+    fun authorBeforeClassRangeMatchesFromStartAuthorThroughLaterClasses() {
+        val shelf = ShelfRange("1", "AIKMYC14-17", 1.0, 2.0, 3.0)
+
+        assertFalse(ShelfRangeParser.matches("AIK14LYN", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK14MYC", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK14NAD", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK15AAL", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK17ZZZ", shelf))
+        assertFalse(ShelfRangeParser.matches("AIK13AAL", shelf))
+        assertFalse(ShelfRangeParser.matches("AIK18AAL", shelf))
+    }
+
+    @Test
+    fun authorBeforeClassRangeHonorsEndAuthor() {
+        val shelf = ShelfRange("1", "AIKMYC14-15JUS", 1.0, 2.0, 3.0)
+
+        assertTrue(ShelfRangeParser.matches("AIK14MYC", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK15AAL", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK15JUS", shelf))
+        assertTrue(ShelfRangeParser.matches("AIK15JUST", shelf))
+        assertFalse(ShelfRangeParser.matches("AIK15KAA", shelf))
+        assertFalse(ShelfRangeParser.matches("AIK14LYN", shelf))
+        assertFalse(ShelfRangeParser.matches("AIK16AAL", shelf))
+    }
+
+    @Test
+    fun prefersPreclassShelfOverGenericWhenBothMatch() {
+        val generic = ShelfRange("g", "AIK84.2MYC-Z", 1.0, 1.0, 0.0)
+        val jannitys = ShelfRange("j", "AIK84.2A-Z", 2.0, 2.0, 0.0, preclass = "Jännitys")
+
+        val chosen = ShelfRangeParser.selectShelf(
+            "AIK84.2MYC",
+            "JÄNNITYS",
+            listOf(generic, jannitys)
+        )
+        assertEquals("j", chosen!!.id)
+    }
+
+    @Test
+    fun booksWithoutPreclassDoNotGoToPreclassShelves() {
+        val generic = ShelfRange("g", "AIK84.2MYC-Z", 1.0, 1.0, 0.0)
+        val jannitys = ShelfRange("j", "AIK84.2A-Z", 2.0, 2.0, 0.0, preclass = "Jännitys")
+
+        val chosen = ShelfRangeParser.selectShelf(
+            "AIK84.2MYC",
+            null,
+            listOf(generic, jannitys)
+        )
+        assertEquals("g", chosen!!.id)
+    }
+
+    @Test
+    fun fallsBackToGenericShelfWhenPreclassRangeDoesNotMatch() {
+        val generic = ShelfRange("g", "AIK84.2MYC-Z", 1.0, 1.0, 0.0)
+        val jannitysEarly = ShelfRange("j", "AIK84.2A-L", 2.0, 2.0, 0.0, preclass = "Jännitys")
+
+        val chosen = ShelfRangeParser.selectShelf(
+            "AIK84.2MYC",
+            "JÄNNITYS",
+            listOf(generic, jannitysEarly)
+        )
+        assertEquals("g", chosen!!.id)
+    }
+
+    @Test
+    fun prefersAuthorBoundShelfOverOpenClassShelf() {
+        val openClass = ShelfRange("open", "AIK14", 1.0, 1.0, 0.0)
+        val fromMyc = ShelfRange("myc", "AIKMYC14-17", 2.0, 2.0, 0.0)
+
+        val chosen = ShelfRangeParser.selectShelf(
+            "AIK14MYC",
+            null,
+            listOf(openClass, fromMyc)
+        )
+        assertEquals("myc", chosen!!.id)
+
+        val earlierAuthor = ShelfRangeParser.selectShelf(
+            "AIK14AAL",
+            null,
+            listOf(openClass, fromMyc)
+        )
+        assertEquals("open", earlierAuthor!!.id)
     }
 }

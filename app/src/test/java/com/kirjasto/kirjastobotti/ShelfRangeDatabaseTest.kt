@@ -104,6 +104,37 @@ class ShelfRangeDatabaseTest {
         val reset = setupPrefs.resetDefaults()
         assertEquals(ShelfSetupPreferences.DEFAULT_SHORTCUTS, reset)
     }
+
+    @Test
+    fun upsertPersistsPreclassAndFindForFinnaPrefersIt() {
+        database.upsert("AIK84.2MYC-Z", 1.0, 1.0, 0.0)
+        val genreShelf = database.upsert(
+            text = "AIK84.2A-Z",
+            x = 2.0,
+            y = 2.0,
+            yaw = 0.0,
+            preclass = "Jännitys",
+            setPreclass = true
+        )
+
+        val listed = database.list().first { it.id == genreShelf.id }
+        assertEquals("Jännitys", listed.preclass)
+
+        val withGenre = database.findForFinnaShelf("Jännitys Aikuiset 84.2 MYC")
+        assertEquals(genreShelf.id, withGenre?.id)
+
+        val withoutGenre = database.findForFinnaShelf("Aikuiset 84.2 MYC")
+        assertEquals("AIK84.2MYC-Z", withoutGenre?.text)
+    }
+
+    @Test
+    fun preclassListCanBeAdded() {
+        assertTrue(setupPrefs.getPreclasses().isEmpty())
+        val after = setupPrefs.addPreclass("Jännitys")
+        assertEquals(listOf("Jännitys"), after)
+        setupPrefs.addPreclass("jännitys")
+        assertEquals(1, setupPrefs.getPreclasses().size)
+    }
 }
 
 /**

@@ -25,7 +25,8 @@ class ShelfRangeDatabase(context: Context) {
                             text = o.optString("text"),
                             mapX = if (o.has("mapX")) o.optDouble("mapX") else null,
                             mapY = if (o.has("mapY")) o.optDouble("mapY") else null,
-                            yaw = if (o.has("yaw")) o.optDouble("yaw") else null
+                            yaw = if (o.has("yaw")) o.optDouble("yaw") else null,
+                            preclass = o.optString("preclass").trim().ifBlank { null }
                         )
                     )
                 }
@@ -35,15 +36,29 @@ class ShelfRangeDatabase(context: Context) {
         }
     }
 
-    fun upsert(text: String, x: Double, y: Double, yaw: Double, id: String? = null): ShelfRange {
+    fun upsert(
+        text: String,
+        x: Double,
+        y: Double,
+        yaw: Double,
+        id: String? = null,
+        preclass: String? = null,
+        setPreclass: Boolean = false
+    ): ShelfRange {
         val normalized = text.trim().uppercase().replace('–', '-').replace('—', '-')
         require(ShelfRangeParser.parseRange(normalized) != null) {
             "Invalid shelf range: $text"
         }
         val ranges = list().toMutableList()
         val actualId = id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
-        val shelf = ShelfRange(actualId, normalized, x, y, yaw)
         val index = ranges.indexOfFirst { it.id == actualId }
+        val existing = index.takeIf { it >= 0 }?.let { ranges[it] }
+        val resolvedPreclass = if (setPreclass) {
+            preclass?.trim()?.ifBlank { null }
+        } else {
+            existing?.normalizedPreclass
+        }
+        val shelf = ShelfRange(actualId, normalized, x, y, yaw, resolvedPreclass)
         if (index >= 0) ranges[index] = shelf else ranges.add(shelf)
         save(ranges)
         return shelf
@@ -94,13 +109,8 @@ class ShelfRangeDatabase(context: Context) {
 
     fun findForFinnaShelf(rawShelf: String): ShelfRange? {
         val target = ShelfRangeParser.normalizeFinnaShelf(rawShelf) ?: return null
-        val configured = list()
-
-        // IMPORTANT: target is not a database key. It is compared against
-        // every configured physical interval until one interval contains it.
-        return configured.firstOrNull { range ->
-            range.hasLocation && ShelfRangeParser.matches(target, range)
-        }
+        val bookPreclass = ShelfRangeParser.extractPreclass(rawShelf)
+        return ShelfRangeParser.selectShelf(target, bookPreclass, list())
     }
 
     private fun save(ranges: List<ShelfRange>) {
@@ -113,6 +123,8 @@ class ShelfRangeDatabase(context: Context) {
                     if (shelf.mapX != null) put("mapX", shelf.mapX)
                     if (shelf.mapY != null) put("mapY", shelf.mapY)
                     if (shelf.yaw != null) put("yaw", shelf.yaw)
+                    val preclass = shelf.normalizedPreclass
+                    if (preclass != null) put("preclass", preclass)
                 }
             )
         }

@@ -25,68 +25,12 @@ class LibraryConfig(context: Context) {
         ) ?: DEFAULT_WEBSITE_URL
 
 
-    val alwaysFilter: String
-        get() = preferences.getString(
-            KEY_ALWAYS_FILTER,
-            DEFAULT_ALWAYS_FILTER
-        ) ?: DEFAULT_ALWAYS_FILTER
-
-
-    /**
-     * The exact library / branch name displayed by Finna.
-     *
-     * This is used when finding the correct shelf for
-     * the "Vie hyllylle" button.
-     */
-    val libraryBranchName: String
-        get() = preferences.getString(
-            KEY_LIBRARY_BRANCH_NAME,
-            DEFAULT_LIBRARY_BRANCH_NAME
-        ) ?: DEFAULT_LIBRARY_BRANCH_NAME
-
-
-    fun update(
-        websiteUrl: String,
-        alwaysFilter: String,
-        libraryBranchName: String
-    ) {
+    fun update(websiteUrl: String) {
 
         preferences.edit()
             .putString(
                 KEY_WEBSITE_URL,
                 websiteUrl
-            )
-            .putString(
-                KEY_ALWAYS_FILTER,
-                alwaysFilter
-            )
-            .putString(
-                KEY_LIBRARY_BRANCH_NAME,
-                libraryBranchName
-            )
-            .apply()
-    }
-
-
-    /**
-     * Backwards-compatible update function.
-     *
-     * Existing code that only updates the URL and filter
-     * will continue to work.
-     */
-    fun update(
-        websiteUrl: String,
-        alwaysFilter: String
-    ) {
-
-        preferences.edit()
-            .putString(
-                KEY_WEBSITE_URL,
-                websiteUrl
-            )
-            .putString(
-                KEY_ALWAYS_FILTER,
-                alwaysFilter
             )
             .apply()
     }
@@ -98,27 +42,14 @@ class LibraryConfig(context: Context) {
             "website_url"
 
 
-        const val KEY_ALWAYS_FILTER =
-            "always_filter"
-
-
-        const val KEY_LIBRARY_BRANCH_NAME =
-            "library_branch_name"
-
-
-        // Current Oulun keskustakirjasto Saari defaults.
         const val DEFAULT_WEBSITE_URL =
             "https://outi.finna.fi/Search/Results?lookfor=&type=AllFields"
 
-
-        const val DEFAULT_ALWAYS_FILTER =
+        // Kirjastobotti is installed at this branch only.
+        const val SAARI_FILTER =
             "~building:\"2/Outi/OU/SA/\""
 
-
-        /**
-         * Must match the branch name shown on the Finna website.
-         */
-        const val DEFAULT_LIBRARY_BRANCH_NAME =
+        const val SAARI_BRANCH_NAME =
             "Oulun keskustakirjasto Saari"
     }
 }

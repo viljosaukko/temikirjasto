@@ -385,6 +385,16 @@ private fun ShelfItemCard(
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(4.dp))
+                val preclassLabel = shelf.normalizedPreclass
+                if (preclassLabel != null) {
+                    Text(
+                        text = "Esiluokka: $preclassLabel",
+                        color = Color(0xFFA78BFA),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
                 if (shelf.hasLocation) {
                     Text(
                         text = "📍 X: ${String.format(Locale.US, "%.2f", shelf.mapX)} m | Y: ${String.format(Locale.US, "%.2f", shelf.mapY)} m | Yaw: ${String.format(Locale.US, "%.1f", shelf.yaw)}°",
