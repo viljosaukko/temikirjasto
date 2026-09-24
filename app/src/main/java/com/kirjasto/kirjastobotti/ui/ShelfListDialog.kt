@@ -21,7 +21,6 @@ import androidx.compose.ui.window.DialogProperties
 import com.kirjasto.kirjastobotti.ShelfRange
 import com.kirjasto.kirjastobotti.ShelfRangeDatabase
 import com.kirjasto.kirjastobotti.ShelfRangeParser
-import com.kirjasto.kirjastobotti.ShelfSetupPreferences
 import com.robotemi.sdk.Robot
 import java.util.Locale
 
@@ -38,16 +37,13 @@ fun ShelfListDialog(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val setupPrefs = remember { ShelfSetupPreferences(context) }
     var shelves by remember { mutableStateOf(database.list()) }
     var searchQuery by remember { mutableStateOf("") }
 
     // Dialog state for renaming & preclass
     var renamingShelf by remember { mutableStateOf<ShelfRange?>(null) }
     var newShelfName by remember { mutableStateOf("") }
-    var editingPreclass by remember { mutableStateOf<String?>(null) }
-    var preclassDropdownExpanded by remember { mutableStateOf(false) }
-    var preclassesList by remember { mutableStateOf(setupPrefs.getPreclasses()) }
+    var editingPreclass by remember { mutableStateOf("") }
     var renameError by remember { mutableStateOf<String?>(null) }
 
     // Dialog state for coordinate editing
@@ -162,8 +158,7 @@ fun ShelfListDialog(
                                 onEditName = {
                                     renamingShelf = shelf
                                     newShelfName = shelf.text
-                                    editingPreclass = shelf.normalizedPreclass
-                                    preclassesList = setupPrefs.getPreclasses()
+                                    editingPreclass = shelf.normalizedPreclass.orEmpty()
                                     renameError = null
                                 },
                                 onEditCoordinates = {
@@ -213,50 +208,15 @@ fun ShelfListDialog(
                     }
 
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Esiluokka:",
-                        fontSize = 13.sp,
-                        color = Color.Gray,
-                        fontWeight = FontWeight.SemiBold
+                    OutlinedTextField(
+                        value = editingPreclass,
+                        onValueChange = { editingPreclass = it },
+                        label = { Text("Tagit (pilkulla erotettuna)") },
+                        placeholder = { Text("Tarkka, Jännitys") },
+                        supportingText = { Text("Voit liittää hyllyyn useita tageja.") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
-                    Box {
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { preclassDropdownExpanded = true },
-                            color = Color(0xFF334155),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                text = editingPreclass ?: "None",
-                                color = if (editingPreclass == null) Color(0xFF94A3B8) else Color.White,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = preclassDropdownExpanded,
-                            onDismissRequest = { preclassDropdownExpanded = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("None") },
-                                onClick = {
-                                    editingPreclass = null
-                                    preclassDropdownExpanded = false
-                                }
-                            )
-                            preclassesList.forEach { label ->
-                                DropdownMenuItem(
-                                    text = { Text(label) },
-                                    onClick = {
-                                        editingPreclass = label
-                                        preclassDropdownExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
                 }
             },
             confirmButton = {
@@ -442,7 +402,7 @@ private fun ShelfItemCard(
                 val preclassLabel = shelf.normalizedPreclass
                 if (preclassLabel != null) {
                     Text(
-                        text = "Esiluokka: $preclassLabel",
+                        text = "Tagit: $preclassLabel",
                         color = Color(0xFFA78BFA),
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold

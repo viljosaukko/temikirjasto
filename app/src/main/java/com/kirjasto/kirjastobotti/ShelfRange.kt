@@ -31,7 +31,8 @@ data class ShelfEndpoint(
 data class ParsedShelfRange(
     val section: String,
     val start: ShelfEndpoint,
-    val end: ShelfEndpoint?
+    val end: ShelfEndpoint?,
+    val exactClasses: List<String>? = null
 ) {
     val prefix: String get() = "$section${start.classNumber}"
 }
@@ -90,6 +91,15 @@ object ShelfRangeParser {
      */
     fun parseRange(raw: String, preclass: String? = null): ParsedShelfRange? {
         val value = normalizeRaw(raw) ?: return null
+        if (value.contains(',')) {
+            val parts = value.split(',').map { it.trim() }
+            if (parts.size < 2 || parts.any { it.isBlank() }) return null
+            val first = Regex("^([A-ZÅÄÖ]{2,8})(\\d{1,3}(?:\\.\\d{1,3})?)$").matchEntire(parts.first()) ?: return null
+            val classes = listOf(first.groupValues[2]) + parts.drop(1).map { part ->
+                Regex("^\\d{1,3}(?:\\.\\d{1,3})?$").matchEntire(part)?.value ?: return null
+            }
+            return ParsedShelfRange(first.groupValues[1], ShelfEndpoint(classes.first()), null, classes)
+        }
         // Setup labels can include the shelf tag between the section and class,
         // e.g. AIKJÄN84.2JON-LIN. It is metadata, not an author start bound.
         val firstClass = classNumberRegex.find(value) ?: return null
@@ -269,6 +279,16 @@ object ShelfRangeParser {
         return cleaned.uppercase(FINNISH_LOCALE)
     }
 
+    fun normalizePreclassTags(raw: String?): List<String> = raw.orEmpty()
+        .split(',', ';')
+        .mapNotNull { normalizePreclassLabel(it) }
+        .distinct()
+
+    private fun hasPreclassTag(shelfTags: String?, tag: String?): Boolean {
+        val target = normalizePreclassLabel(tag) ?: return false
+        return normalizePreclassTags(shelfTags).any { it == target }
+    }
+
     fun preclassEquals(a: String?, b: String?): Boolean {
         val left = normalizePreclassLabel(a) ?: return false
         val right = normalizePreclassLabel(b) ?: return false
@@ -287,7 +307,7 @@ object ShelfRangeParser {
         val extracted = extractPreclass(raw) ?: return null
         val extractedNorm = normalizePreclassLabel(extracted) ?: return null
         val extractedTokens = extractedNorm.split(' ')
-        val known = ranges.mapNotNull { normalizePreclassLabel(it.preclass) }.distinct()
+        val known = ranges.flatMap { normalizePreclassTags(it.preclass) }.distinct()
         if (known.isEmpty()) return null
 
         known.firstOrNull { it == extractedNorm }?.let { return it }
@@ -318,11 +338,11 @@ object ShelfRangeParser {
         ranges: List<ShelfRange>
     ): ShelfRange? {
         val useTagged = !bookPreclass.isNullOrBlank() &&
-            ranges.any { preclassEquals(it.normalizedPreclass, bookPreclass) }
+            ranges.any { hasPreclassTag(it.normalizedPreclass, bookPreclass) }
 
         val located = ranges.filter { it.hasLocation }
         val pool = if (useTagged) {
-            located.filter { preclassEquals(it.normalizedPreclass, bookPreclass) }
+            located.filter { hasPreclassTag(it.normalizedPreclass, bookPreclass) }
         } else {
             located.filter { it.normalizedPreclass == null }
         }
@@ -552,6 +572,10 @@ object ShelfRangeParser {
         val target = parseTarget(targetRaw) ?: return false
 
         if (target.section != parsed.section) return false
+
+        parsed.exactClasses?.let { classes ->
+            return classes.any { compareClassification(target.classNumber, it) == 0 }
+        }
 
         val startClassCmp = compareClassification(target.classNumber, parsed.start.classNumber)
         if (startClassCmp < 0) return false

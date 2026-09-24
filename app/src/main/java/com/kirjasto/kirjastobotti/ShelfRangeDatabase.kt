@@ -54,7 +54,7 @@ class ShelfRangeDatabase(context: Context) {
         val index = ranges.indexOfFirst { it.id == actualId }
         val existing = index.takeIf { it >= 0 }?.let { ranges[it] }
         val resolvedPreclass = if (setPreclass) {
-            preclass?.trim()?.ifBlank { null }
+            ShelfRangeParser.normalizePreclassTags(preclass).joinToString(", ").ifBlank { null }
         } else {
             existing?.normalizedPreclass
         }
@@ -89,7 +89,7 @@ class ShelfRangeDatabase(context: Context) {
         if (index < 0) return null
         val existing = ranges[index]
         val resolvedPreclass = if (setPreclass) {
-            preclass?.trim()?.ifBlank { null }
+            ShelfRangeParser.normalizePreclassTags(preclass).joinToString(", ").ifBlank { null }
         } else {
             existing.normalizedPreclass
         }
