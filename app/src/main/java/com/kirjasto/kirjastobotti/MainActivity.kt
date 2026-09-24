@@ -1237,6 +1237,14 @@ class MainActivity : ComponentActivity() {
                 webView.loadUrl(applyAlwaysFilter(searchUrl))
             }
         }
+        cameraStreamer.onCameraError = { reason ->
+            runOnUiThread {
+                barcodeScanning = false
+                cameraStreamer.setBarcodeScanningEnabled(false)
+                barcodeScanButton?.text = "Skannaa viivakoodi"
+                Toast.makeText(this, "Kamera ei toimi: $reason", Toast.LENGTH_LONG).show()
+            }
+        }
 
         adminServer =
             AdminServer(
@@ -1651,12 +1659,8 @@ class MainActivity : ComponentActivity() {
                 barcodeScanning = !barcodeScanning
                 cameraStreamer.setBarcodeScanningEnabled(barcodeScanning)
                 text = if (barcodeScanning) "Etsitään viivakoodia…" else "Skannaa viivakoodi"
-                if (barcodeScanning && !cameraStreamer.isRunning) {
-                    Toast.makeText(this@MainActivity, "Temin kamera ei ole käytettävissä", Toast.LENGTH_LONG).show()
-                    barcodeScanning = false
-                    cameraStreamer.setBarcodeScanningEnabled(false)
-                    text = "Skannaa viivakoodi"
-                }
+                if (barcodeScanning && !cameraStreamer.isRunning)
+                    Toast.makeText(this@MainActivity, "Kamera käynnistyy – pidä viivakoodi näkyvissä", Toast.LENGTH_SHORT).show()
             }
         }
         root.addView(barcodeScanButton, FrameLayout.LayoutParams(

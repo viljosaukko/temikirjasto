@@ -17,6 +17,7 @@ import android.view.Surface
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.abs
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 
@@ -41,6 +42,7 @@ class CameraStreamer(private val context: Context) {
     @Volatile private var lastBarcode = ""
     @Volatile private var lastBarcodeTime = 0L
     @Volatile var onBarcodeDetected: ((String) -> Unit)? = null
+    @Volatile var onCameraError: ((String) -> Unit)? = null
     private val barcodeScanner = BarcodeScanning.getClient()
     private var camera: CameraDevice? = null
     private var session: CameraCaptureSession? = null
@@ -64,13 +66,20 @@ class CameraStreamer(private val context: Context) {
 
             if (cameraId == null) {
                 Log.w(TAG, "No Android camera exposed by temi")
+                onCameraError?.invoke("Temi ei ilmoita käytettävissä olevaa kameraa")
                 return
             }
+
+            val characteristics = manager.getCameraCharacteristics(cameraId)
+            val jpegSize = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputSizes(ImageFormat.JPEG)
+                ?.minByOrNull { abs(it.width - WIDTH) + abs(it.height - HEIGHT) }
+                ?: throw IllegalStateException("Kamerasta ei löydy tuettua JPEG-kuvakokoa")
 
             thread = HandlerThread("temi-camera").also { it.start() }
             handler = Handler(thread!!.looper)
 
-            reader = ImageReader.newInstance(WIDTH, HEIGHT, ImageFormat.JPEG, 2).also {
+            reader = ImageReader.newInstance(jpegSize.width, jpegSize.height, ImageFormat.JPEG, 2).also {
                 it.setOnImageAvailableListener({ r ->
                     r.acquireLatestImage()?.use { image ->
                         val buffer: ByteBuffer = image.planes[0].buffer
@@ -93,6 +102,12 @@ class CameraStreamer(private val context: Context) {
                                 val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                                     addTarget(surface)
                                     set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                                    val afModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)
+                                    if (afModes?.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE) == true) {
+                                        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                    } else if (afModes?.contains(CaptureRequest.CONTROL_AF_MODE_AUTO) == true) {
+                                        set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+                                    }
                                     set(CaptureRequest.JPEG_QUALITY, JPEG_QUALITY.toByte())
                                 }.build()
                                 s.setRepeatingRequest(request, null, handler)
@@ -106,6 +121,7 @@ class CameraStreamer(private val context: Context) {
 
                         override fun onConfigureFailed(s: CameraCaptureSession) {
                             Log.e(TAG, "Camera capture session configuration failed")
+                            onCameraError?.invoke("Temin kameran kuvausta ei voitu käynnistää")
                             stop()
                         }
                     }, handler)
@@ -113,17 +129,20 @@ class CameraStreamer(private val context: Context) {
 
                 override fun onDisconnected(device: CameraDevice) {
                     device.close()
+                    onCameraError?.invoke("Temin kamera katkesi")
                     stop()
                 }
 
                 override fun onError(device: CameraDevice, error: Int) {
                     Log.e(TAG, "Camera open error: $error")
                     device.close()
+                    onCameraError?.invoke("Temin kameran avaus epäonnistui ($error)")
                     stop()
                 }
             }, handler)
         } catch (e: Exception) {
             Log.e(TAG, "Unable to start camera", e)
+            onCameraError?.invoke(e.message ?: "Temin kameraa ei voitu avata")
             stop()
         }
     }
