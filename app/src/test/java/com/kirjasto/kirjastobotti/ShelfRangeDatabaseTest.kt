@@ -135,6 +135,52 @@ class ShelfRangeDatabaseTest {
         setupPrefs.addPreclass("jännitys")
         assertEquals(1, setupPrefs.getPreclasses().size)
     }
+
+    @Test
+    fun preclassCanBeRemoved() {
+        setupPrefs.addPreclass("Jännitys")
+        setupPrefs.addPreclass("Scifi")
+        assertEquals(2, setupPrefs.getPreclasses().size)
+        val after = setupPrefs.removePreclass("Jännitys")
+        assertEquals(listOf("Scifi"), after)
+        assertEquals(listOf("Scifi"), setupPrefs.getPreclasses())
+    }
+
+    @Test
+    fun updateShelfUpdatesBothTextAndPreclass() {
+        val created = database.upsert(
+            text = "AIK84.2A-CAN",
+            x = 1.0,
+            y = 1.0,
+            yaw = 0.0,
+            preclass = null,
+            setPreclass = true
+        )
+        assertNull(created.normalizedPreclass)
+
+        val updated = database.updateShelf(
+            id = created.id,
+            newText = "AIK84.2CON-D",
+            preclass = "Jännitys",
+            setPreclass = true
+        )
+        assertNotNull(updated)
+        assertEquals("AIK84.2CON-D", updated?.text)
+        assertEquals("Jännitys", updated?.normalizedPreclass)
+
+        val reloaded = database.get(created.id)
+        assertEquals("AIK84.2CON-D", reloaded?.text)
+        assertEquals("Jännitys", reloaded?.normalizedPreclass)
+
+        // Clear preclass back to none
+        val cleared = database.updateShelf(
+            id = created.id,
+            newText = "AIK84.2CON-D",
+            preclass = null,
+            setPreclass = true
+        )
+        assertNull(cleared?.normalizedPreclass)
+    }
 }
 
 /**

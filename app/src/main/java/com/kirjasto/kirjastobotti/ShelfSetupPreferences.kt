@@ -63,10 +63,9 @@ class ShelfSetupPreferences(context: Context) {
     }
 
     fun addPreclass(label: String): List<String> {
-        val cleaned = label.trim()
-        if (cleaned.isBlank()) return getPreclasses()
+        val cleaned = ShelfRangeParser.normalizePreclassLabel(label) ?: return getPreclasses()
         val current = getPreclasses().toMutableList()
-        if (current.none { it.equals(cleaned, ignoreCase = true) }) {
+        if (current.none { ShelfRangeParser.preclassEquals(it, cleaned) }) {
             current.add(cleaned)
             savePreclasses(current)
         }

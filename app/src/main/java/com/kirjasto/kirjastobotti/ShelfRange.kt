@@ -1,5 +1,7 @@
 package com.kirjasto.kirjastobotti
 
+import java.util.Locale
+
 /** A physical shelf interval entered by the library staff, e.g. AIK84.2CON-D. */
 data class ShelfRange(
     val id: String,
@@ -11,13 +13,13 @@ data class ShelfRange(
     val preclass: String? = null
 ) {
     val parsed: ParsedShelfRange?
-        get() = ShelfRangeParser.parseRange(text)
+        get() = ShelfRangeParser.parseRange(text, preclass)
 
     val hasLocation: Boolean
         get() = mapX != null && mapY != null && yaw != null
 
     val normalizedPreclass: String?
-        get() = preclass?.trim()?.takeIf { it.isNotEmpty() }
+        get() = ShelfRangeParser.normalizePreclassLabel(preclass)
 }
 
 data class ShelfEndpoint(
@@ -55,6 +57,8 @@ data class ParsedShelfTarget(
  */
 object ShelfRangeParser {
 
+    private val FINNISH_LOCALE = Locale.forLanguageTag("fi")
+
     /** Finnish alphabetical order used for author shelf keys. */
     private const val FINNISH_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ"
 
@@ -84,15 +88,26 @@ object ShelfRangeParser {
      *   - Multi-class + author bound: AIK81-82.2A-M, AIK81-82.2M, AIK82.2N-83, AIK82.2N-83A-M
      *   - Author letters before class (start bound): AIKMYC14-17, AIKMYC14-15JUS
      */
-    fun parseRange(raw: String): ParsedShelfRange? {
+    fun parseRange(raw: String, preclass: String? = null): ParsedShelfRange? {
         val value = normalizeRaw(raw) ?: return null
+        // Setup labels can include the shelf tag between the section and class,
+        // e.g. AIKJÄN84.2JON-LIN. It is metadata, not an author start bound.
         val firstClass = classNumberRegex.find(value) ?: return null
         val head = value.substring(0, firstClass.range.first)
+        val section = parseSection(head) ?: return null
+        val embedded = head.substring(section.length)
+        val tagCode = normalizePreclassLabel(preclass)
+            ?.filter { it in FINNISH_ALPHABET }
+            ?.take(3)
+            .orEmpty()
+        if (tagCode.isNotEmpty() && embedded == tagCode) {
+            return parseRange(value.removeRange(section.length, section.length + tagCode.length))
+        }
+
         if (head.isBlank() || !head.all { it in 'A'..'Z' || it == 'Å' || it == 'Ä' || it == 'Ö' }) {
             return null
         }
 
-        val section = parseSection(head) ?: return null
         var remainder = value.substring(section.length)
         remainder = remainder.replace("-$section", "-")
 
@@ -245,57 +260,132 @@ object ShelfRangeParser {
         return collected.joinToString(" ").ifBlank { null }
     }
 
+    fun normalizePreclassLabel(raw: String?): String? {
+        val cleaned = raw
+            ?.trim()
+            ?.replace(Regex("\\s+"), " ")
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+        return cleaned.uppercase(FINNISH_LOCALE)
+    }
+
     fun preclassEquals(a: String?, b: String?): Boolean {
-        val left = a?.trim().orEmpty()
-        val right = b?.trim().orEmpty()
-        if (left.isEmpty() || right.isEmpty()) return false
-        return left.equals(right, ignoreCase = true)
+        val left = normalizePreclassLabel(a) ?: return false
+        val right = normalizePreclassLabel(b) ?: return false
+        return left == right
     }
 
     /**
-     * Among configured intervals that contain [targetRaw], prefer a shelf whose
-     * esiluokka matches the book, then a shelf with no esiluokka. When several
-     * still match, the tightest author/class bound wins.
+     * If the Finna call number starts with a genre that is actually used as a
+     * shelf tag, return that tag. Otherwise null so the book is sorted with
+     * ordinary untagged shelves.
+     *
+     *   "Jännitys Aikuiset 84.2 VYN" + a JÄNNITYS shelf -> "JÄNNITYS"
+     *   "Kauhu Aikuiset 84.2 TAN"    + no KAUHU shelf  -> null
+     */
+    fun resolveExistingPreclass(raw: String, ranges: List<ShelfRange>): String? {
+        val extracted = extractPreclass(raw) ?: return null
+        val extractedNorm = normalizePreclassLabel(extracted) ?: return null
+        val extractedTokens = extractedNorm.split(' ')
+        val known = ranges.mapNotNull { normalizePreclassLabel(it.preclass) }.distinct()
+        if (known.isEmpty()) return null
+
+        known.firstOrNull { it == extractedNorm }?.let { return it }
+
+        return known
+            .filter { tag ->
+                val tagTokens = tag.split(' ')
+                if (tagTokens.size == 1) {
+                    extractedTokens.contains(tag)
+                } else {
+                    extractedNorm == tag || extractedNorm.startsWith("$tag ")
+                }
+            }
+            .maxByOrNull { it.length }
+    }
+
+    /**
+     * Among configured intervals that contain [targetRaw]:
+     * if any shelf is tagged with the book's genre, sort only among those tagged
+     * shelves. If no shelf has that tag, sort among untagged shelves. A tagged
+     * book never falls through to a generic shelf just because its tagged range
+     * does not contain the target.
+     * When several still match, the tightest author/class bound wins.
      */
     fun selectShelf(
         targetRaw: String,
         bookPreclass: String?,
         ranges: List<ShelfRange>
     ): ShelfRange? {
-        val matching = ranges.filter { range ->
-            range.hasLocation && matches(targetRaw, range)
+        val useTagged = !bookPreclass.isNullOrBlank() &&
+            ranges.any { preclassEquals(it.normalizedPreclass, bookPreclass) }
+
+        val located = ranges.filter { it.hasLocation }
+        val pool = if (useTagged) {
+            located.filter { preclassEquals(it.normalizedPreclass, bookPreclass) }
+        } else {
+            located.filter { it.normalizedPreclass == null }
         }
+
+        val matching = pool.filter { matches(targetRaw, it) }
         if (matching.isEmpty()) return null
 
-        val preclassHits = if (!bookPreclass.isNullOrBlank()) {
-            matching.filter { preclassEquals(it.normalizedPreclass, bookPreclass) }
-        } else {
-            emptyList()
+        val target = parseTarget(targetRaw)
+        return matching.minWithOrNull { a, b ->
+            compareShelfSpecificity(a.parsed, b.parsed, target)
         }
-
-        val pool = if (preclassHits.isNotEmpty()) {
-            preclassHits
-        } else {
-            matching.filter { it.normalizedPreclass == null }
-        }
-
-        return pool.minWithOrNull(specificShelfComparator)
     }
 
-    private val specificShelfComparator = Comparator<ShelfRange> { a, b ->
-        specificityRank(a.parsed).compareTo(specificityRank(b.parsed))
+    /** Prefer the nearest author interval when configured shelf ranges overlap. */
+    private fun compareShelfSpecificity(
+        a: ParsedShelfRange?,
+        b: ParsedShelfRange?,
+        target: ParsedShelfTarget?
+    ): Int {
+        if (a == null || b == null) return (a == null).compareTo(b == null)
+        val classRank = specificityRank(a, target).compareTo(specificityRank(b, target))
+        if (classRank != 0) return classRank
+
+        val targetAuthor = target?.authorKey.orEmpty()
+        val aStart = a.start.authorStart.orEmpty()
+        val bStart = b.start.authorStart.orEmpty()
+        val aStartsBefore = compareFinnish(aStart, targetAuthor) <= 0
+        val bStartsBefore = compareFinnish(bStart, targetAuthor) <= 0
+        if (aStartsBefore && bStartsBefore) {
+            val nearestStart = compareFinnish(bStart, aStart)
+            if (nearestStart != 0) return nearestStart
+        }
+
+        val aEnd = a.end?.authorEnd.orEmpty()
+        val bEnd = b.end?.authorEnd.orEmpty()
+        if (aEnd.isNotEmpty() && bEnd.isNotEmpty()) {
+            val nearestEnd = compareFinnish(aEnd, bEnd)
+            if (nearestEnd != 0) return nearestEnd
+        } else if (aEnd.isNotEmpty() != bEnd.isNotEmpty()) {
+            return if (aEnd.isNotEmpty()) -1 else 1
+        }
+        return 0
     }
 
     /**
-     * Lower rank = more specific. Author bounds beat open class buckets;
+     * Lower rank = more specific. A closer YKL ancestor beats a coarser parent
+     * (14.4 before 14 before 1). Author bounds beat open class buckets;
      * a single class beats a multi-class span.
      */
-    private fun specificityRank(parsed: ParsedShelfRange?): Int {
+    private fun specificityRank(parsed: ParsedShelfRange?, target: ParsedShelfTarget?): Int {
         if (parsed == null) return Int.MAX_VALUE
-        val startAuthor = if (parsed.start.authorStart != null) 0 else 4
-        val endAuthor = if (parsed.end?.authorStart != null || parsed.end?.authorEnd != null) 0 else 2
         val multiClass = if (parsed.end != null && parsed.end.classNumber != parsed.start.classNumber) 1 else 0
-        return startAuthor + endAuthor + multiClass
+        val classGap = classCoarseness(parsed, target) * 8
+        return multiClass + classGap
+    }
+
+    /** Extra digits the book class has beyond the shelf's starting class. */
+    private fun classCoarseness(parsed: ParsedShelfRange, target: ParsedShelfTarget?): Int {
+        if (target == null) return 0
+        val shelfDigits = classificationDigits(parsed.start.classNumber)
+        val targetDigits = classificationDigits(target.classNumber)
+        if (shelfDigits.isEmpty() || !targetDigits.startsWith(shelfDigits)) return 0
+        return (targetDigits.length - shelfDigits.length).coerceAtLeast(0)
     }
 
     private fun tokenizeFinna(raw: String): List<String>? {
@@ -303,7 +393,7 @@ object ShelfRangeParser {
             .replace('\u00A0', ' ')
             .replace(Regex("\\s+"), " ")
             .trim()
-            .uppercase()
+            .uppercase(FINNISH_LOCALE)
             .replace(Regex("^HYLLY:\\s*"), "")
 
         if (cleaned.isBlank()) return null
@@ -389,6 +479,34 @@ object ShelfRangeParser {
         return a.length.compareTo(b.length)
     }
 
+    /**
+     * YKL class as a digit string, ignoring the decimal point. Each digit is
+     * one hierarchy step: 14.4 -> "144", 38.552 -> "38552".
+     */
+    fun classificationDigits(raw: String): String {
+        return raw.trim().replace(",", ".").replace(".", "")
+    }
+
+    /**
+     * True when [childRaw] is the same YKL class as [parentRaw], or a finer
+     * alaluokka of it. Libraries choose their own shelving depth, so 14.4
+     * belongs on a 14 shelf when there is no 14.4 shelf.
+     *
+     *   14.4 is under 14 and 1
+     *   14.14 is under 14.1, not under 14.4
+     *   38.552 is under 38.55, 38.5, 38
+     */
+    fun isSameOrSubclass(childRaw: String, parentRaw: String): Boolean {
+        val child = childRaw.trim().replace(',', '.').split('.', limit = 2)
+        val parent = parentRaw.trim().replace(',', '.').split('.', limit = 2)
+        if (child[0].isEmpty() || parent[0].isEmpty()) return false
+        if (parent.size == 1) return child[0].startsWith(parent[0])
+        if (child[0] != parent[0]) return false
+        val childSub = child.getOrElse(1) { "" }
+        val parentSub = parent[1]
+        return childSub.startsWith(parentSub)
+    }
+
     /** Returns negative/zero/positive according to Finnish shelf alphabet order. */
     fun compareFinnish(aRaw: String, bRaw: String): Int {
         val a = aRaw.trim().uppercase()
@@ -426,6 +544,8 @@ object ShelfRangeParser {
      *   - Multi-class without author: AIK81-82.2
      *   - Multi-class + author bound: AIK81-82.2A-M, AIK82.2N-83
      *   - Author letters before class: AIKMYC14-17, AIKMYC14-15JUS
+     *   - YKL alaluokka fallback: AIK14.4YRJ belongs on AIK14 / AIK14TAL
+     *     when there is no dedicated 14.4 shelf
      */
     fun matches(targetRaw: String, range: ShelfRange): Boolean {
         val parsed = range.parsed ?: return false
@@ -445,14 +565,22 @@ object ShelfRangeParser {
 
         val end = parsed.end
         if (end == null) {
-            if (startClassCmp != 0) return false
-            val startAuthor = parsed.start.authorStart
-            if (startAuthor == null) return true
-            return target.authorKey.startsWith(startAuthor)
+            if (startClassCmp == 0) {
+                val startAuthor = parsed.start.authorStart
+                if (startAuthor == null) return true
+                return target.authorKey.startsWith(startAuthor)
+            }
+            // Finer YKL subclass of this shelf's class, e.g. 14.4 on a 14 shelf.
+            return isSameOrSubclass(target.classNumber, parsed.start.classNumber)
         }
 
         val endClassCmp = compareClassification(target.classNumber, end.classNumber)
-        if (endClassCmp > 0) return false
+        if (endClassCmp > 0) {
+            // Subclass of the end class counts as still on that class, but only
+            // when the interval covers the whole end class (no author cut-off).
+            if (!isSameOrSubclass(target.classNumber, end.classNumber)) return false
+            return end.authorStart == null && end.authorEnd == null
+        }
         if (endClassCmp < 0) return true
 
         val endAuthorStart = end.authorStart

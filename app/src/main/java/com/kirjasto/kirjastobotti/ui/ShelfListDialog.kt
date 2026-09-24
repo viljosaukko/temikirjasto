@@ -2,6 +2,7 @@ package com.kirjasto.kirjastobotti.ui
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,13 +21,14 @@ import androidx.compose.ui.window.DialogProperties
 import com.kirjasto.kirjastobotti.ShelfRange
 import com.kirjasto.kirjastobotti.ShelfRangeDatabase
 import com.kirjasto.kirjastobotti.ShelfRangeParser
+import com.kirjasto.kirjastobotti.ShelfSetupPreferences
 import com.robotemi.sdk.Robot
 import java.util.Locale
 
 /**
  * Dialog displaying all registered shelves, allowing staff to:
  * - Delete shelves
- * - Change the name without modifying positioning
+ * - Change the name and preclass without modifying positioning
  * - Change coordinates manually or by capturing robot's current position
  */
 @Composable
@@ -36,12 +38,16 @@ fun ShelfListDialog(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val setupPrefs = remember { ShelfSetupPreferences(context) }
     var shelves by remember { mutableStateOf(database.list()) }
     var searchQuery by remember { mutableStateOf("") }
 
-    // Dialog state for renaming
+    // Dialog state for renaming & preclass
     var renamingShelf by remember { mutableStateOf<ShelfRange?>(null) }
     var newShelfName by remember { mutableStateOf("") }
+    var editingPreclass by remember { mutableStateOf<String?>(null) }
+    var preclassDropdownExpanded by remember { mutableStateOf(false) }
+    var preclassesList by remember { mutableStateOf(setupPrefs.getPreclasses()) }
     var renameError by remember { mutableStateOf<String?>(null) }
 
     // Dialog state for coordinate editing
@@ -156,6 +162,8 @@ fun ShelfListDialog(
                                 onEditName = {
                                     renamingShelf = shelf
                                     newShelfName = shelf.text
+                                    editingPreclass = shelf.normalizedPreclass
+                                    preclassesList = setupPrefs.getPreclasses()
                                     renameError = null
                                 },
                                 onEditCoordinates = {
@@ -176,14 +184,14 @@ fun ShelfListDialog(
         }
     }
 
-    // --- Sub-Dialog: Rename Shelf ---
+    // --- Sub-Dialog: Edit Shelf Name & Preclass ---
     if (renamingShelf != null) {
         val target = renamingShelf!!
         AlertDialog(
             onDismissRequest = { renamingShelf = null },
-            title = { Text("Muuta hyllyn nimeä", fontWeight = FontWeight.Bold) },
+            title = { Text("Muokkaa hyllyä", fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
                         "Nykyinen nimi: ${target.text}\nSijainti säilyy muuttumattomana.",
                         fontSize = 14.sp,
@@ -195,7 +203,7 @@ fun ShelfListDialog(
                             newShelfName = it
                             renameError = null
                         },
-                        label = { Text("Uusi hyllynimi (esim. AIK84.2A-CAN)") },
+                        label = { Text("Hyllynimi (esim. AIK84.2A-CAN, AIKMYC14-17)") },
                         singleLine = true,
                         isError = renameError != null,
                         modifier = Modifier.fillMaxWidth()
@@ -203,25 +211,71 @@ fun ShelfListDialog(
                     if (renameError != null) {
                         Text(renameError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                     }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Esiluokka:",
+                        fontSize = 13.sp,
+                        color = Color.Gray,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Box {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { preclassDropdownExpanded = true },
+                            color = Color(0xFF334155),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                text = editingPreclass ?: "None",
+                                color = if (editingPreclass == null) Color(0xFF94A3B8) else Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = preclassDropdownExpanded,
+                            onDismissRequest = { preclassDropdownExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("None") },
+                                onClick = {
+                                    editingPreclass = null
+                                    preclassDropdownExpanded = false
+                                }
+                            )
+                            preclassesList.forEach { label ->
+                                DropdownMenuItem(
+                                    text = { Text(label) },
+                                    onClick = {
+                                        editingPreclass = label
+                                        preclassDropdownExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(onClick = {
                     val normalized = newShelfName.trim().uppercase().replace('–', '-').replace('—', '-')
                     if (ShelfRangeParser.parseRange(normalized) == null) {
-                        renameError = "Virheellinen hyllymuoto. Esimerkki: AIK84.2CON-D"
+                        renameError = "Virheellinen hyllymuoto. Esimerkki: AIK84.2CON-D tai AIKMYC14-17"
                         return@Button
                     }
                     try {
-                        database.updateText(target.id, normalized)
-                        Toast.makeText(context, "Hylly nimetty: $normalized", Toast.LENGTH_SHORT).show()
+                        database.updateShelf(target.id, normalized, editingPreclass, setPreclass = true)
+                        Toast.makeText(context, "Hylly päivitetty: $normalized", Toast.LENGTH_SHORT).show()
                         refreshList()
                         renamingShelf = null
                     } catch (e: Exception) {
                         renameError = e.message ?: "Tallennus epäonnistui"
                     }
                 }) {
-                    Text("Tallenna nimi")
+                    Text("Tallenna")
                 }
             },
             dismissButton = {
@@ -416,7 +470,7 @@ private fun ShelfItemCard(
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
-                    Text("✎ Muuta nimeä", fontSize = 13.sp, color = Color.White)
+                    Text("✎ Muokkaa", fontSize = 13.sp, color = Color.White)
                 }
 
                 Button(

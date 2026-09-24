@@ -72,9 +72,14 @@ class ShelfRangeDatabase(context: Context) {
     }
 
     /**
-     * Updates the text/name of an existing shelf without modifying its positioning.
+     * Updates the text/name and optionally preclass of an existing shelf without modifying its positioning.
      */
-    fun updateText(id: String, newText: String): ShelfRange? {
+    fun updateShelf(
+        id: String,
+        newText: String,
+        preclass: String? = null,
+        setPreclass: Boolean = true
+    ): ShelfRange? {
         val normalized = newText.trim().uppercase().replace('–', '-').replace('—', '-')
         require(ShelfRangeParser.parseRange(normalized) != null) {
             "Invalid shelf range: $newText"
@@ -83,10 +88,22 @@ class ShelfRangeDatabase(context: Context) {
         val index = ranges.indexOfFirst { it.id == id }
         if (index < 0) return null
         val existing = ranges[index]
-        val updated = existing.copy(text = normalized)
+        val resolvedPreclass = if (setPreclass) {
+            preclass?.trim()?.ifBlank { null }
+        } else {
+            existing.normalizedPreclass
+        }
+        val updated = existing.copy(text = normalized, preclass = resolvedPreclass)
         ranges[index] = updated
         save(ranges)
         return updated
+    }
+
+    /**
+     * Updates the text/name of an existing shelf without modifying its positioning.
+     */
+    fun updateText(id: String, newText: String): ShelfRange? {
+        return updateShelf(id, newText, setPreclass = false)
     }
 
     /**
@@ -108,9 +125,10 @@ class ShelfRangeDatabase(context: Context) {
     }
 
     fun findForFinnaShelf(rawShelf: String): ShelfRange? {
+        val ranges = list()
         val target = ShelfRangeParser.normalizeFinnaShelf(rawShelf) ?: return null
-        val bookPreclass = ShelfRangeParser.extractPreclass(rawShelf)
-        return ShelfRangeParser.selectShelf(target, bookPreclass, list())
+        val bookPreclass = ShelfRangeParser.resolveExistingPreclass(rawShelf, ranges)
+        return ShelfRangeParser.selectShelf(target, bookPreclass, ranges)
     }
 
     private fun save(ranges: List<ShelfRange>) {
