@@ -62,4 +62,5 @@ dependencies {
 
     // ML Kit on-device text recognition (used for shelf sign OCR in Setup Mode)
     implementation("com.google.mlkit:text-recognition:16.0.0")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
 }

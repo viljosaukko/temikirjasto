@@ -3,6 +3,7 @@ package com.kirjasto.kirjastobotti
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat
+import android.graphics.BitmapFactory
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -16,6 +17,8 @@ import android.view.Surface
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicReference
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.common.InputImage
 
 /**
  * Captures JPEG frames with Camera2 and exposes them as an MJPEG stream.
@@ -34,6 +37,11 @@ class CameraStreamer(private val context: Context) {
     }
 
     private val latest = AtomicReference<ByteArray?>(null)
+    @Volatile private var barcodeScanningEnabled = false
+    @Volatile private var lastBarcode = ""
+    @Volatile private var lastBarcodeTime = 0L
+    @Volatile var onBarcodeDetected: ((String) -> Unit)? = null
+    private val barcodeScanner = BarcodeScanning.getClient()
     private var camera: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var reader: ImageReader? = null
@@ -69,6 +77,7 @@ class CameraStreamer(private val context: Context) {
                         val bytes = ByteArray(buffer.remaining())
                         buffer.get(bytes)
                         latest.set(bytes)
+                        scanBarcode(bytes)
                     }
                 }, handler)
             }
@@ -117,6 +126,33 @@ class CameraStreamer(private val context: Context) {
             Log.e(TAG, "Unable to start camera", e)
             stop()
         }
+    }
+
+    fun setBarcodeScanningEnabled(enabled: Boolean) {
+        barcodeScanningEnabled = enabled
+        if (enabled) {
+            lastBarcode = ""
+            lastBarcodeTime = 0L
+        }
+    }
+
+    private fun scanBarcode(jpeg: ByteArray) {
+        if (!barcodeScanningEnabled) return
+        val now = System.currentTimeMillis()
+        if (now - lastBarcodeTime < 700) return
+        lastBarcodeTime = now
+        val image = InputImage.fromByteArray(jpeg, 0, jpeg.size, 0, InputImage.IMAGE_FORMAT_JPEG)
+        barcodeScanner.process(image)
+            .addOnSuccessListener { barcodes ->
+                val value = barcodes.firstNotNullOfOrNull { it.rawValue } ?: return@addOnSuccessListener
+                // ISBN-10/13 only: ignore unrelated product and QR codes.
+                val isbn = value.replace("-", "").replace(" ", "")
+                if (!isbn.matches(Regex("(?:97[89])?\\d{9}[\\dXx]"))) return@addOnSuccessListener
+                if (isbn != lastBarcode) {
+                    lastBarcode = isbn
+                    onBarcodeDetected?.invoke(isbn)
+                }
+            }
     }
 
     fun stop() {

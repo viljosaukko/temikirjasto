@@ -46,6 +46,8 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var robot: Robot
     private lateinit var webView: WebView
+    private var barcodeScanButton: Button? = null
+    private var barcodeScanning = false
     private lateinit var libraryConfig: LibraryConfig
 
     // LAN admin panel / remote driving
@@ -1219,6 +1221,22 @@ class MainActivity : ComponentActivity() {
 
         cameraStreamer =
             CameraStreamer(this)
+        cameraStreamer.onBarcodeDetected = { isbn ->
+            runOnUiThread {
+                if (!barcodeScanning || !::webView.isInitialized) return@runOnUiThread
+                barcodeScanning = false
+                cameraStreamer.setBarcodeScanningEnabled(false)
+                barcodeScanButton?.text = "Skannaa viivakoodi"
+                Toast.makeText(this, "ISBN $isbn löytyi – haetaan kirjoja", Toast.LENGTH_SHORT).show()
+                val searchUrl = Uri.parse(libraryConfig.websiteUrl).buildUpon()
+                    .path("/Search/Results")
+                    .clearQuery()
+                    .appendQueryParameter("lookfor", isbn)
+                    .appendQueryParameter("type", "AllFields")
+                    .build().toString()
+                webView.loadUrl(applyAlwaysFilter(searchUrl))
+            }
+        }
 
         adminServer =
             AdminServer(
@@ -1624,6 +1642,28 @@ class MainActivity : ComponentActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
         )
+
+        barcodeScanButton = Button(this).apply {
+            text = "Skannaa viivakoodi"
+            textSize = 18f
+            isAllCaps = false
+            setOnClickListener {
+                barcodeScanning = !barcodeScanning
+                cameraStreamer.setBarcodeScanningEnabled(barcodeScanning)
+                text = if (barcodeScanning) "Etsitään viivakoodia…" else "Skannaa viivakoodi"
+                if (barcodeScanning && !cameraStreamer.isRunning) {
+                    Toast.makeText(this@MainActivity, "Temin kamera ei ole käytettävissä", Toast.LENGTH_LONG).show()
+                    barcodeScanning = false
+                    cameraStreamer.setBarcodeScanningEnabled(false)
+                    text = "Skannaa viivakoodi"
+                }
+            }
+        }
+        root.addView(barcodeScanButton, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.END
+        ).apply { topMargin = 20; marginEnd = 20 })
 
 
         // This is shown only while Temi is actively navigating.
