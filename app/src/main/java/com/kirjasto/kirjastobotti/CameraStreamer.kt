@@ -141,7 +141,8 @@ class CameraStreamer(private val context: Context) {
         val now = System.currentTimeMillis()
         if (now - lastBarcodeTime < 700) return
         lastBarcodeTime = now
-        val image = InputImage.fromByteArray(jpeg, 0, jpeg.size, 0, InputImage.IMAGE_FORMAT_JPEG)
+        val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return
+        val image = InputImage.fromBitmap(bitmap, 0)
         barcodeScanner.process(image)
             .addOnSuccessListener { barcodes ->
                 val value = barcodes.firstNotNullOfOrNull { it.rawValue } ?: return@addOnSuccessListener
@@ -153,6 +154,7 @@ class CameraStreamer(private val context: Context) {
                     onBarcodeDetected?.invoke(isbn)
                 }
             }
+            .addOnCompleteListener { bitmap.recycle() }
     }
 
     fun stop() {
