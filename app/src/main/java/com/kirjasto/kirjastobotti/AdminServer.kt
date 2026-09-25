@@ -459,7 +459,8 @@ class AdminServer(
                                 "camera":${camera.isRunning},
                                 "ip":"${localIp()}",
                                 "port":$PORT,
-                                "moving":$moving
+                                "moving":$moving,
+                                "barcodeScanning":${camera.barcodeScanningEnabled}
                             }
                             """.trimIndent()
 
@@ -1225,6 +1226,86 @@ class AdminServer(
                     }
 
 
+
+                    /*
+                     * Barcode scanner status: returns whether scanning is active,
+                     * the last scanned ISBN (if any), timestamp, camera status, and library URL.
+                     */
+                    method == "GET" &&
+                            target == "/api/barcode" -> {
+
+                        val scanning = camera.barcodeScanningEnabled
+                        val last = jsonEscape(camera.lastDetectedBarcode)
+                        val lastTime = camera.lastDetectedBarcodeTime
+                        val cameraReady = camera.isRunning
+                        val websiteUrl = jsonEscape(libraryConfig.websiteUrl)
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{\"scanning\":$scanning,\"lastIsbn\":\"$last\",\"lastScanTime\":$lastTime,\"cameraReady\":$cameraReady,\"websiteUrl\":\"$websiteUrl\"}",
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+
+                    /*
+                     * Toggle the barcode scanner on or off.
+                     * POST /api/barcode-scan?enabled=true|false
+                     */
+                    method == "POST" &&
+                            target == "/api/barcode-scan" -> {
+
+                        val enabled = query["enabled"]?.trim()?.lowercase() == "true"
+                        val main = context as? MainActivity
+
+                        if (main != null) {
+                            main.setBarcodeScanning(enabled)
+                        } else {
+                            camera.setBarcodeScanningEnabled(enabled)
+                            if (enabled && !camera.isRunning) {
+                                camera.start()
+                            }
+                        }
+
+                        writeText(
+                            it.getOutputStream(),
+                            200,
+                            "{\"ok\":true,\"scanning\":$enabled}",
+                            "application/json; charset=utf-8"
+                        )
+                    }
+
+
+                    /*
+                     * Trigger a book lookup on the robot screen for a specific ISBN.
+                     * POST /api/barcode-lookup?isbn=978...
+                     */
+                    method == "POST" &&
+                            target == "/api/barcode-lookup" -> {
+
+                        val isbn = query["isbn"]?.trim().orEmpty()
+                        val main = context as? MainActivity
+
+                        if (isbn.isBlank()) {
+                            writeText(
+                                it.getOutputStream(),
+                                400,
+                                "{\"ok\":false,\"error\":\"isbn required\"}",
+                                "application/json; charset=utf-8"
+                            )
+                        } else {
+                            main?.lookupIsbn(isbn)
+                            writeText(
+                                it.getOutputStream(),
+                                200,
+                                "{\"ok\":true,\"isbn\":\"${jsonEscape(isbn)}\"}",
+                                "application/json; charset=utf-8"
+                            )
+                        }
+                    }
+
+
                     else -> {
 
                         writeText(
@@ -1941,7 +2022,7 @@ button:active,
 
     display:grid;
 
-    grid-template-columns:1fr 1fr;
+    grid-template-columns:1fr 1fr 1fr 1fr;
 
     gap:8px;
 
@@ -2135,6 +2216,14 @@ button:active,
     id="shelfRangesTab">
 
     Shelf ranges
+
+</button>
+
+<button
+    class="tab"
+    id="barcodeTab">
+
+    Barcode scanner
 
 </button>
 
@@ -2534,6 +2623,69 @@ button:active,
 
 
 <div id="usageStatus" class="hint"></div>
+
+</div>
+
+
+<div id="barcodePanel" class="panel-hidden">
+
+<h1>
+    Barcode scanner
+</h1>
+
+<p class="hint">
+    Scan book ISBN barcodes using temi's camera. When a barcode is detected, temi automatically searches for the book in the library catalog. You can control scanning and look up items here.
+</p>
+
+<div class="section">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button id="toggleBarcodeScan" class="config-save" style="background:#2563eb;font-size:15px;padding:12px 18px;width:auto">
+            📷 Start barcode scanning
+        </button>
+        <span id="barcodeScannerStatus" class="hint" style="font-weight:600"></span>
+    </div>
+</div>
+
+<div class="section">
+    <h2>Latest scanned barcode</h2>
+    <div id="latestBarcodeCard" style="margin-top:10px;padding:14px;border:1px solid #283442;border-radius:10px;background:#0e141b">
+        <div id="barcodeResultDisplay" style="color:#9aa7b5;font-size:14px">
+            No barcode scanned yet.
+        </div>
+        <div id="barcodeActions" style="display:none;margin-top:12px;gap:8px;flex-wrap:wrap">
+            <a id="barcodeFinnaLink" href="#" target="_blank" class="config-save" style="background:#2f6b3f;text-decoration:none;display:inline-flex;align-items:center;padding:8px 14px;font-size:13px;width:auto">
+                🔍 Open in Finna catalog
+            </a>
+            <button id="barcodeResendButton" class="config-save" style="background:#345a78;padding:8px 14px;font-size:13px;width:auto">
+                📺 Show on robot screen
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <h2>Manual ISBN lookup</h2>
+    <p class="hint">Type or paste an ISBN to search for the book directly on the robot's screen.</p>
+    <div style="display:flex;gap:8px;margin-top:8px">
+        <input id="manualIsbnInput" class="config-input" type="text" placeholder="e.g. 9789510478349" autocomplete="off" style="flex:1">
+        <button id="manualIsbnButton" class="config-save" style="width:auto;margin:0;white-space:nowrap;background:#345a78;padding:10px 16px">
+            Search
+        </button>
+    </div>
+    <div id="manualIsbnStatus" class="hint" style="margin-top:6px"></div>
+</div>
+
+<div class="section">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2>Scan history</h2>
+        <button id="clearBarcodeHistory" class="config-save" style="background:#552b31;font-size:11px;padding:4px 8px;width:auto;margin:0">
+            Clear
+        </button>
+    </div>
+    <div id="barcodeHistoryList" style="margin-top:10px;max-height:220px;overflow-y:auto;font-size:13px">
+        <span class="hint">No history yet this session.</span>
+    </div>
+</div>
 
 </div>
 
@@ -3334,6 +3486,13 @@ function showPanel(
         );
 
     document
+        .getElementById('barcodePanel')
+        .classList.toggle(
+            'panel-hidden',
+            panel !== 'barcode'
+        );
+
+    document
         .querySelectorAll('.tab')
         .forEach(element => element.classList.remove('tab-active'));
 
@@ -3400,6 +3559,184 @@ document.getElementById('usageTab').addEventListener('click', () => {
 document.getElementById('shelfRangesTab').addEventListener('click', () => {
     showPanel('shelfRanges', 'shelfRangesTab');
     loadShelfRanges();
+});
+
+
+document.getElementById('barcodeTab').addEventListener('click', () => {
+    showPanel('barcode', 'barcodeTab');
+    loadBarcodeStatus();
+});
+
+
+let barcodeScanningActive = false;
+let lastKnownIsbn = '';
+let barcodeHistory = [];
+let libraryBaseUrl = 'https://ouka.finna.fi';
+
+function escapeBarcodeHtml(str){
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function loadBarcodeStatus(){
+    try {
+        const response = await fetch('/api/barcode', { cache: 'no-store' });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.websiteUrl) libraryBaseUrl = data.websiteUrl;
+        updateBarcodeUi(data);
+    } catch (_) {}
+}
+
+function updateBarcodeUi(data){
+    barcodeScanningActive = !!data.scanning;
+    const toggleBtn = document.getElementById('toggleBarcodeScan');
+    const statusText = document.getElementById('barcodeScannerStatus');
+
+    if (toggleBtn && statusText) {
+        if (barcodeScanningActive) {
+            toggleBtn.textContent = '⏹ Stop barcode scanning';
+            toggleBtn.style.background = '#dc2626';
+            statusText.textContent = '● Scanning active – hold ISBN barcode in front of camera';
+            statusText.style.color = '#9fe3ad';
+        } else {
+            toggleBtn.textContent = '📷 Start barcode scanning';
+            toggleBtn.style.background = '#2563eb';
+            if (data.cameraReady === false) {
+                statusText.textContent = 'Camera not available';
+                statusText.style.color = '#e07a5f';
+            } else {
+                statusText.textContent = 'Ready';
+                statusText.style.color = '#9aa7b5';
+            }
+        }
+    }
+
+    if (data.lastIsbn && data.lastIsbn !== lastKnownIsbn) {
+        lastKnownIsbn = data.lastIsbn;
+        renderNewBarcode(data.lastIsbn, data.lastScanTime);
+    }
+}
+
+function renderNewBarcode(isbn, scanTime){
+    const display = document.getElementById('barcodeResultDisplay');
+    const actions = document.getElementById('barcodeActions');
+    const finnaLink = document.getElementById('barcodeFinnaLink');
+    if (!display) return;
+
+    const timeStr = scanTime ? new Date(scanTime).toLocaleTimeString() : new Date().toLocaleTimeString();
+    display.innerHTML = '<span style="font-size:20px;font-weight:700;font-family:monospace;color:#9fe3ad;letter-spacing:1px">' +
+        escapeBarcodeHtml(isbn) + '</span><span class="hint" style="margin-left:12px">scanned ' + timeStr + '</span>';
+
+    const finnaUrl = libraryBaseUrl.replace(/\/+$/, '') + '/Search/Results?lookfor=' + encodeURIComponent(isbn) + '&type=AllFields';
+    if (finnaLink) finnaLink.href = finnaUrl;
+    if (actions) actions.style.display = 'flex';
+
+    addToBarcodeHistory(isbn, timeStr, finnaUrl);
+}
+
+function addToBarcodeHistory(isbn, timeStr, finnaUrl){
+    if (barcodeHistory.some(item => item.isbn === isbn && item.time === timeStr)) return;
+    barcodeHistory.unshift({ isbn, time: timeStr, url: finnaUrl });
+    if (barcodeHistory.length > 30) barcodeHistory.pop();
+    renderBarcodeHistory();
+}
+
+function renderBarcodeHistory(){
+    const list = document.getElementById('barcodeHistoryList');
+    if (!list) return;
+    if (!barcodeHistory.length) {
+        list.innerHTML = '<span class="hint">No history yet this session.</span>';
+        return;
+    }
+    list.replaceChildren();
+    barcodeHistory.forEach(item => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;margin-bottom:6px;background:#141b23;border:1px solid #283442;border-radius:8px';
+
+        const left = document.createElement('div');
+        left.innerHTML = '<strong style="font-family:monospace;color:#eef2f7">' + escapeBarcodeHtml(item.isbn) + '</strong> <span class="hint" style="margin-left:8px;font-size:11px">' + item.time + '</span>';
+
+        const btns = document.createElement('div');
+        btns.style.cssText = 'display:flex;gap:6px';
+
+        const searchBtn = document.createElement('button');
+        searchBtn.className = 'config-save';
+        searchBtn.style.cssText = 'width:auto;margin:0;padding:4px 8px;font-size:11px;background:#345a78';
+        searchBtn.textContent = '📺 Robot';
+        searchBtn.title = 'Search on robot screen';
+        searchBtn.onclick = () => sendIsbnToRobot(item.isbn);
+
+        const openBtn = document.createElement('a');
+        openBtn.href = item.url;
+        openBtn.target = '_blank';
+        openBtn.className = 'config-save';
+        openBtn.style.cssText = 'width:auto;margin:0;padding:4px 8px;font-size:11px;background:#2f6b3f;text-decoration:none;display:inline-flex;align-items:center';
+        openBtn.textContent = '🔍 Finna';
+
+        btns.appendChild(searchBtn);
+        btns.appendChild(openBtn);
+        row.appendChild(left);
+        row.appendChild(btns);
+        list.appendChild(row);
+    });
+}
+
+async function sendIsbnToRobot(isbn){
+    const clean = isbn.trim();
+    if (!clean) return;
+    const status = document.getElementById('manualIsbnStatus');
+    if (status) status.textContent = 'Searching on robot screen...';
+    try {
+        const response = await fetch('/api/barcode-lookup?isbn=' + encodeURIComponent(clean), { method: 'POST' });
+        const result = await response.json();
+        if (result.ok && status) {
+            status.textContent = 'Book searched on robot: ' + clean;
+        }
+    } catch (e) {
+        if (status) status.textContent = 'Lookup failed: ' + e.message;
+    }
+}
+
+document.getElementById('toggleBarcodeScan')?.addEventListener('click', async () => {
+    const nextState = !barcodeScanningActive;
+    try {
+        const response = await fetch('/api/barcode-scan?enabled=' + nextState, { method: 'POST' });
+        const result = await response.json();
+        barcodeScanningActive = !!result.scanning;
+        loadBarcodeStatus();
+    } catch (e) {
+        const statusText = document.getElementById('barcodeScannerStatus');
+        if (statusText) statusText.textContent = 'Toggle failed: ' + e.message;
+    }
+});
+
+document.getElementById('barcodeResendButton')?.addEventListener('click', () => {
+    if (lastKnownIsbn) sendIsbnToRobot(lastKnownIsbn);
+});
+
+document.getElementById('manualIsbnButton')?.addEventListener('click', () => {
+    const input = document.getElementById('manualIsbnInput');
+    const isbn = input?.value.trim().orEmpty || input?.value.trim() || '';
+    if (!isbn) {
+        const status = document.getElementById('manualIsbnStatus');
+        if (status) status.textContent = 'Enter an ISBN first.';
+        return;
+    }
+    sendIsbnToRobot(isbn);
+    const finnaUrl = libraryBaseUrl.replace(/\/+$/, '') + '/Search/Results?lookfor=' + encodeURIComponent(isbn) + '&type=AllFields';
+    addToBarcodeHistory(isbn, new Date().toLocaleTimeString(), finnaUrl);
+    if (input) input.value = '';
+});
+
+document.getElementById('manualIsbnInput')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        document.getElementById('manualIsbnButton')?.click();
+    }
+});
+
+document.getElementById('clearBarcodeHistory')?.addEventListener('click', () => {
+    barcodeHistory = [];
+    renderBarcodeHistory();
 });
 
 
@@ -3921,6 +4258,8 @@ async function status(){
                     : 'unavailable'
             );
 
+        loadBarcodeStatus();
+
     } catch(
         e
     ) {
@@ -3936,6 +4275,8 @@ async function status(){
 
 
 loadLibraryConfig();
+
+loadBarcodeStatus();
 
 status();
 

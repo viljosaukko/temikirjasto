@@ -38,11 +38,17 @@ class CameraStreamer(private val context: Context) {
     }
 
     private val latest = AtomicReference<ByteArray?>(null)
-    @Volatile private var barcodeScanningEnabled = false
+    @Volatile private var _barcodeScanningEnabled = false
+    val barcodeScanningEnabled: Boolean get() = _barcodeScanningEnabled
     @Volatile private var lastBarcode = ""
     @Volatile private var lastBarcodeTime = 0L
     @Volatile var onBarcodeDetected: ((String) -> Unit)? = null
     @Volatile var onCameraError: ((String) -> Unit)? = null
+    /** The most recently detected ISBN barcode value (empty string if none yet). Readable by AdminServer for polling. */
+    @Volatile var lastDetectedBarcode: String = ""
+        private set
+    @Volatile var lastDetectedBarcodeTime: Long = 0L
+        private set
     private val barcodeScanner = BarcodeScanning.getClient()
     private var camera: CameraDevice? = null
     private var session: CameraCaptureSession? = null
@@ -148,7 +154,7 @@ class CameraStreamer(private val context: Context) {
     }
 
     fun setBarcodeScanningEnabled(enabled: Boolean) {
-        barcodeScanningEnabled = enabled
+        _barcodeScanningEnabled = enabled
         if (enabled) {
             lastBarcode = ""
             lastBarcodeTime = 0L
@@ -156,7 +162,7 @@ class CameraStreamer(private val context: Context) {
     }
 
     private fun scanBarcode(jpeg: ByteArray) {
-        if (!barcodeScanningEnabled) return
+        if (!_barcodeScanningEnabled) return
         val now = System.currentTimeMillis()
         if (now - lastBarcodeTime < 700) return
         lastBarcodeTime = now
@@ -170,6 +176,8 @@ class CameraStreamer(private val context: Context) {
                 if (!isbn.matches(Regex("(?:97[89])?\\d{9}[\\dXx]"))) return@addOnSuccessListener
                 if (isbn != lastBarcode) {
                     lastBarcode = isbn
+                    lastDetectedBarcode = isbn
+                    lastDetectedBarcodeTime = System.currentTimeMillis()
                     onBarcodeDetected?.invoke(isbn)
                 }
             }
