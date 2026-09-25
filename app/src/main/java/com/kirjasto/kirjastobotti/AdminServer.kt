@@ -501,6 +501,47 @@ class AdminServer(
                     }
 
 
+                    /*
+                     * Export all shelf ranges as a downloadable JSON backup.
+                     */
+                    method == "GET" &&
+                            target == "/api/shelf-ranges/export" -> {
+
+                        val ranges = shelfRangeDatabase.list()
+                        val json = buildString {
+                            append("{\"ranges\":[")
+                            ranges.forEachIndexed { index, range ->
+                                if (index > 0) append(",")
+                                append("{")
+                                append("\"id\":\"${jsonEscape(range.id)}\",")
+                                append("\"text\":\"${jsonEscape(range.text)}\"")
+                                if (range.mapX != null) append(",\"mapX\":${range.mapX}")
+                                if (range.mapY != null) append(",\"mapY\":${range.mapY}")
+                                if (range.yaw != null) append(",\"yaw\":${range.yaw}")
+                                val preclass = range.normalizedPreclass
+                                if (preclass != null) append(",\"preclass\":\"${jsonEscape(preclass)}\"")
+                                append("}")
+                            }
+                            append("]}")
+                        }
+
+                        val bytes = json.toByteArray(StandardCharsets.UTF_8)
+                        val filename = "shelf-ranges-backup.json"
+                        val header =
+                            "HTTP/1.1 200 OK\r\n" +
+                                    "Content-Type: application/json; charset=utf-8\r\n" +
+                                    "Content-Disposition: attachment; filename=\"$filename\"\r\n" +
+                                    "Content-Length: ${bytes.size}\r\n" +
+                                    "Cache-Control: no-store\r\n" +
+                                    "Connection: close\r\n" +
+                                    "\r\n"
+                        val out = it.getOutputStream()
+                        out.write(header.toByteArray(StandardCharsets.US_ASCII))
+                        out.write(bytes)
+                        out.flush()
+                    }
+
+
                     method == "POST" &&
                             target == "/api/shelf-ranges/location" -> {
 
@@ -2437,6 +2478,7 @@ button:active,
 <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <button id="addShelfRange" class="config-save">+ Add shelf range</button>
     <button id="openShelfSetupOnRobot" class="config-save" style="background:#2563eb">🚀 Open setup on robot</button>
+    <a id="exportShelfRanges" href="/api/shelf-ranges/export" download="shelf-ranges-backup.json" class="config-save" style="background:#6b21a8;text-decoration:none;display:inline-flex;align-items:center">⬇ Export backup</a>
     <span id="shelfRangesStatus" class="hint"></span>
 </div>
 
