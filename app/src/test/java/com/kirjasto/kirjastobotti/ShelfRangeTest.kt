@@ -432,4 +432,55 @@ class ShelfRangeTest {
         val cutAtAuthor = ShelfRange("2", "AIK81-82.2A-M", 2.0, 2.0, 0.0)
         assertFalse(ShelfRangeParser.matches("AIK82.21KAN", cutAtAuthor))
     }
+
+    // -----------------------------------------------------------------------
+    // Combined exact-class list & class range (& syntax)
+    // -----------------------------------------------------------------------
+
+    @Test
+    fun parsesCombinedExactClassesAndRange() {
+        // LAP30.8,35.3&4-5.8  →  exact: [30.8, 35.3]  range: LAP4..LAP5.8
+        val parsed = ShelfRangeParser.parseRange("LAP30.8,35.3&4-5.8")
+        assertNotNull(parsed)
+        assertEquals("LAP", parsed!!.section)
+        assertEquals(listOf("30.8", "35.3"), parsed.exactClasses)
+        assertNotNull(parsed.rangeStart)
+        assertEquals("4", parsed.rangeStart!!.classNumber)
+        assertNotNull(parsed.rangeEnd)
+        assertEquals("5.8", parsed.rangeEnd!!.classNumber)
+    }
+
+    @Test
+    fun combinedShelfMatchesExactClassesAndRange() {
+        val shelf = ShelfRange("1", "LAP30.8,35.3&4-5.8", 1.0, 1.0, 0.0)
+
+        // Exact class hits
+        assertTrue(ShelfRangeParser.matches("LAP30.8AAL", shelf))
+        assertTrue(ShelfRangeParser.matches("LAP35.3MAT", shelf))
+
+        // Class range hits (LAP4 through LAP5.8)
+        assertTrue(ShelfRangeParser.matches("LAP4AAL", shelf))
+        assertTrue(ShelfRangeParser.matches("LAP5.8ZZZ", shelf))
+        assertTrue(ShelfRangeParser.matches("LAP5AAL", shelf))
+
+        // Not in exact classes and not in range
+        assertFalse(ShelfRangeParser.matches("LAP31AAL", shelf))
+        assertFalse(ShelfRangeParser.matches("LAP6AAL", shelf))
+        assertFalse(ShelfRangeParser.matches("LAP3.9AAL", shelf))
+        // Different section
+        assertFalse(ShelfRangeParser.matches("AIK30.8AAL", shelf))
+    }
+
+    @Test
+    fun combinedShelfWithSingleExactClassAndRange() {
+        // AIK84.2&81-82.2  →  exact: [84.2]  range: AIK81..AIK82.2
+        val shelf = ShelfRange("1", "AIK84.2&81-82.2", 1.0, 1.0, 0.0)
+
+        assertTrue(ShelfRangeParser.matches("AIK84.2ANA", shelf))  // exact class
+        assertTrue(ShelfRangeParser.matches("AIK81KAN", shelf))    // in range
+        assertTrue(ShelfRangeParser.matches("AIK82.2KYR", shelf))  // in range
+        assertFalse(ShelfRangeParser.matches("AIK83AAL", shelf))   // past range end
+        assertFalse(ShelfRangeParser.matches("AIK80AAL", shelf))   // before range start
+        assertFalse(ShelfRangeParser.matches("AIK85AAL", shelf))   // not exact, not in range
+    }
 }

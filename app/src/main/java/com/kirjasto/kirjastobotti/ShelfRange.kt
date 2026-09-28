@@ -32,7 +32,14 @@ data class ParsedShelfRange(
     val section: String,
     val start: ShelfEndpoint,
     val end: ShelfEndpoint?,
-    val exactClasses: List<String>? = null
+    val exactClasses: List<String>? = null,
+    /**
+     * When a shelf uses the combined syntax (e.g. LAP30.8,35.3&4-5.8), [exactClasses] holds
+     * the specific class numbers and [rangeStart]/[rangeEnd] hold the class range endpoints.
+     * A book matches if it falls in either the exact-classes list OR the class range.
+     */
+    val rangeStart: ShelfEndpoint? = null,
+    val rangeEnd: ShelfEndpoint? = null
 ) {
     val prefix: String get() = "$section${start.classNumber}"
 }
@@ -88,9 +95,37 @@ object ShelfRangeParser {
      *   - Multi-class range:          AIK81-82.2
      *   - Multi-class + author bound: AIK81-82.2A-M, AIK81-82.2M, AIK82.2N-83, AIK82.2N-83A-M
      *   - Author letters before class (start bound): AIKMYC14-17, AIKMYC14-15JUS
+     *   - Comma-separated exact classes: AIK84.2,85.3
+     *   - Combined exact classes & range (& separator): LAP30.8,35.3&4-5.8
+     *     (before & = specific classes list; after & = class range, section inferred if omitted)
      */
     fun parseRange(raw: String, preclass: String? = null): ParsedShelfRange? {
         val value = normalizeRaw(raw) ?: return null
+
+        // Combined syntax: exact classes & a class range, e.g. LAP30.8,35.3&4-5.8
+        if (value.contains('&')) {
+            val ampIdx = value.indexOf('&')
+            val exactPart = value.substring(0, ampIdx).trim()
+            val rangePart = value.substring(ampIdx + 1).trim()
+
+            // Parse the exact-classes side (comma-separated, section on first token only)
+            val exactParsed = parseRange(exactPart, preclass) ?: return null
+            val classes = exactParsed.exactClasses ?: listOf(exactParsed.start.classNumber)
+
+            // Parse the range side – prepend section if missing
+            val rangeWithSection = if (rangePart.first().isDigit()) exactParsed.section + rangePart else rangePart
+            val rangeParsed = parseRange(rangeWithSection, preclass) ?: return null
+
+            return ParsedShelfRange(
+                section = exactParsed.section,
+                start = ShelfEndpoint(classNumber = classes.first()),
+                end = null,
+                exactClasses = classes,
+                rangeStart = rangeParsed.start,
+                rangeEnd = rangeParsed.end
+            )
+        }
+
         if (value.contains(',')) {
             val parts = value.split(',').map { it.trim() }
             if (parts.size < 2 || parts.any { it.isBlank() }) return null
@@ -566,6 +601,8 @@ object ShelfRangeParser {
      *   - Author letters before class: AIKMYC14-17, AIKMYC14-15JUS
      *   - YKL alaluokka fallback: AIK14.4YRJ belongs on AIK14 / AIK14TAL
      *     when there is no dedicated 14.4 shelf
+     *   - Combined exact-class list & range: LAP30.8,35.3&4-5.8
+     *     (matches class 30.8 or 35.3 exactly, OR any class in 4..5.8)
      */
     fun matches(targetRaw: String, range: ShelfRange): Boolean {
         val parsed = range.parsed ?: return false
@@ -574,34 +611,43 @@ object ShelfRangeParser {
         if (target.section != parsed.section) return false
 
         parsed.exactClasses?.let { classes ->
-            return classes.any { compareClassification(target.classNumber, it) == 0 }
+            val inExact = classes.any { compareClassification(target.classNumber, it) == 0 }
+            if (inExact) return true
+
+            // Combined shelf (exact classes & range): also test the range part if present.
+            val rs = parsed.rangeStart ?: return false
+            val re = parsed.rangeEnd
+            return matchesRange(target, rs, re)
         }
 
-        val startClassCmp = compareClassification(target.classNumber, parsed.start.classNumber)
+        return matchesRange(target, parsed.start, parsed.end)
+    }
+
+    /**
+     * Core range-matching logic: checks whether [target] falls within the interval
+     * [start]..[end]. Reused by both the ordinary range path and the combined
+     * exact-classes-&-range path.
+     */
+    private fun matchesRange(target: ParsedShelfTarget, start: ShelfEndpoint, end: ShelfEndpoint?): Boolean {
+        val startClassCmp = compareClassification(target.classNumber, start.classNumber)
         if (startClassCmp < 0) return false
 
         if (startClassCmp == 0) {
-            val startAuthor = parsed.start.authorStart
-            if (startAuthor != null) {
-                if (compareFinnish(target.authorKey, startAuthor) < 0) return false
-            }
+            val startAuthor = start.authorStart
+            if (startAuthor != null && compareFinnish(target.authorKey, startAuthor) < 0) return false
         }
 
-        val end = parsed.end
         if (end == null) {
             if (startClassCmp == 0) {
-                val startAuthor = parsed.start.authorStart
+                val startAuthor = start.authorStart
                 if (startAuthor == null) return true
                 return target.authorKey.startsWith(startAuthor)
             }
-            // Finer YKL subclass of this shelf's class, e.g. 14.4 on a 14 shelf.
-            return isSameOrSubclass(target.classNumber, parsed.start.classNumber)
+            return isSameOrSubclass(target.classNumber, start.classNumber)
         }
 
         val endClassCmp = compareClassification(target.classNumber, end.classNumber)
         if (endClassCmp > 0) {
-            // Subclass of the end class counts as still on that class, but only
-            // when the interval covers the whole end class (no author cut-off).
             if (!isSameOrSubclass(target.classNumber, end.classNumber)) return false
             return end.authorStart == null && end.authorEnd == null
         }

@@ -2293,11 +2293,11 @@ button:active,
 
 <p class="hint">
 
-    Use the buttons, keyboard,
-    or a game controller to
-    drive the robot.
+    Use da buttons, keyboawd,
+    ow a game contwowwew to
+    dwive da wobot.
 
-    Release the key/button
+    Rewease da key/button
     to stop.
 
 </p>
@@ -2307,7 +2307,7 @@ button:active,
 
 
 <button
-    id="driveForwardButton"
+    id="dwivefowwawdbutton"
     class="w"
     data-action="forward">
  
@@ -2317,7 +2317,7 @@ button:active,
 
 
 <button
-    id="driveLeftButton"
+    id="dwiveleftbutton"
     class="a"
     data-action="left">
  
@@ -2327,7 +2327,7 @@ button:active,
 
 
 <button
-    id="driveBackwardButton"
+    id="dwivebackwawdbutton"
     class="s"
     data-action="backward">
  
@@ -2337,7 +2337,7 @@ button:active,
 
 
 <button
-    id="driveRightButton"
+    id="dwiverightbutton"
     class="d"
     data-action="right">
  

@@ -363,7 +363,7 @@ fun RobotShelfSetupScreen(
                                 )
                             } else {
                                 Text(
-                                    text = "ℹ Esimerkki: AIK84.2A-CAN, AIKMYC14-17 tai AIK81-82.2",
+                                    text = "ℹ Esimerkki: AIK84.2A-CAN, AIKMYC14-17, AIK81-82.2 tai LAP30.8,35.3&4-5.8",
                                     color = Color(0xFFFBBF24),
                                     fontSize = 12.sp
                                 )
