@@ -46,7 +46,6 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var robot: Robot
     private lateinit var webView: WebView
-    private var barcodeScanButton: Button? = null
     private var barcodeScanning = false
     private lateinit var libraryConfig: LibraryConfig
 
@@ -1221,27 +1220,18 @@ class MainActivity : ComponentActivity() {
 
         cameraStreamer =
             CameraStreamer(this)
-        cameraStreamer.onBarcodeDetected = { isbn ->
+        cameraStreamer.onBarcodeDetected = { code ->
             runOnUiThread {
                 barcodeScanning = false
                 cameraStreamer.setBarcodeScanningEnabled(false)
-                barcodeScanButton?.text = "Skannaa viivakoodi"
                 if (!::webView.isInitialized) return@runOnUiThread
-                Toast.makeText(this, "ISBN $isbn löytyi – haetaan kirjoja", Toast.LENGTH_SHORT).show()
-                val searchUrl = Uri.parse(libraryConfig.websiteUrl).buildUpon()
-                    .path("/Search/Results")
-                    .clearQuery()
-                    .appendQueryParameter("lookfor", isbn)
-                    .appendQueryParameter("type", "AllFields")
-                    .build().toString()
-                webView.loadUrl(applyAlwaysFilter(searchUrl))
+                lookupBook(code)
             }
         }
         cameraStreamer.onCameraError = { reason ->
             runOnUiThread {
                 barcodeScanning = false
                 cameraStreamer.setBarcodeScanningEnabled(false)
-                barcodeScanButton?.text = "Skannaa viivakoodi"
                 Toast.makeText(this, "Kamera ei toimi: $reason", Toast.LENGTH_LONG).show()
             }
         }
@@ -1651,24 +1641,6 @@ class MainActivity : ComponentActivity() {
             )
         )
 
-        barcodeScanButton = Button(this).apply {
-            text = "Skannaa viivakoodi"
-            textSize = 18f
-            isAllCaps = false
-            setOnClickListener {
-                val nextState = !barcodeScanning
-                setBarcodeScanning(nextState)
-                if (nextState && !cameraStreamer.isRunning)
-                    Toast.makeText(this@MainActivity, "Kamera käynnistyy – pidä viivakoodi näkyvissä", Toast.LENGTH_SHORT).show()
-            }
-        }
-        root.addView(barcodeScanButton, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.END
-        ).apply { topMargin = 20; marginEnd = 20 })
-
-
         // This is shown only while Temi is actively navigating.
         createNavigationOverlay(root)
 
@@ -2055,7 +2027,6 @@ class MainActivity : ComponentActivity() {
         runOnUiThread {
             barcodeScanning = enabled
             cameraStreamer.setBarcodeScanningEnabled(enabled)
-            barcodeScanButton?.text = if (enabled) "Etsitään viivakoodia…" else "Skannaa viivakoodi"
             if (enabled && !cameraStreamer.isRunning) {
                 cameraStreamer.start()
             }
@@ -2064,20 +2035,40 @@ class MainActivity : ComponentActivity() {
 
     fun isBarcodeScanning(): Boolean = barcodeScanning
 
-    fun lookupIsbn(isbn: String) {
-        val cleanIsbn = isbn.replace("-", "").replace(" ", "").trim()
-        if (cleanIsbn.isEmpty()) return
+    fun lookupBook(query: String, directRecordId: String? = null) {
+        val trimmed = query.trim()
+        val recordId = directRecordId?.trim()?.ifEmpty { null }
+        if (trimmed.isEmpty() && recordId == null) return
+
         runOnUiThread {
             if (!::webView.isInitialized) return@runOnUiThread
-            Toast.makeText(this, "ISBN $cleanIsbn – haetaan kirjoja", Toast.LENGTH_SHORT).show()
-            val searchUrl = Uri.parse(libraryConfig.websiteUrl).buildUpon()
-                .path("/Search/Results")
-                .clearQuery()
-                .appendQueryParameter("lookfor", cleanIsbn)
-                .appendQueryParameter("type", "AllFields")
-                .build().toString()
-            webView.loadUrl(applyAlwaysFilter(searchUrl))
+
+            val baseUri = Uri.parse(libraryConfig.websiteUrl)
+            val builder = baseUri.buildUpon()
+
+            if (recordId != null) {
+                val cleanId = if (recordId.startsWith("outi.")) recordId else "outi.$recordId"
+                Toast.makeText(this, "Avataan teos…", Toast.LENGTH_SHORT).show()
+                builder.path("/Record/$cleanId").clearQuery()
+            } else if (trimmed.startsWith("outi.") || trimmed.startsWith("/Record/")) {
+                val cleanId = trimmed.removePrefix("/Record/").removePrefix("/")
+                Toast.makeText(this, "Avataan teos…", Toast.LENGTH_SHORT).show()
+                builder.path("/Record/$cleanId").clearQuery()
+            } else {
+                Toast.makeText(this, "Haetaan: $trimmed", Toast.LENGTH_SHORT).show()
+                builder.path("/Search/Results")
+                    .clearQuery()
+                    .appendQueryParameter("lookfor", trimmed)
+                    .appendQueryParameter("type", "AllFields")
+            }
+
+            val targetUrl = builder.build().toString()
+            webView.loadUrl(applyAlwaysFilter(targetUrl))
         }
+    }
+
+    fun lookupIsbn(isbn: String) {
+        lookupBook(isbn)
     }
 
     private fun requestSetupModeAccess() {

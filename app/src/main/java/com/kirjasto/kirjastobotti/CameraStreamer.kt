@@ -55,6 +55,7 @@ class CameraStreamer(private val context: Context) {
     private var reader: ImageReader? = null
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
+    private var sensorOrientation: Int = 0
 
     @Volatile var isRunning = false
         private set
@@ -77,6 +78,7 @@ class CameraStreamer(private val context: Context) {
             }
 
             val characteristics = manager.getCameraCharacteristics(cameraId)
+            sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
             val jpegSize = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?.getOutputSizes(ImageFormat.JPEG)
                 ?.minByOrNull { abs(it.width - WIDTH) + abs(it.height - HEIGHT) }
@@ -167,18 +169,16 @@ class CameraStreamer(private val context: Context) {
         if (now - lastBarcodeTime < 700) return
         lastBarcodeTime = now
         val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return
-        val image = InputImage.fromBitmap(bitmap, 0)
+        val image = InputImage.fromBitmap(bitmap, sensorOrientation)
         barcodeScanner.process(image)
             .addOnSuccessListener { barcodes ->
-                val value = barcodes.firstNotNullOfOrNull { it.rawValue } ?: return@addOnSuccessListener
-                // ISBN-10/13 only: ignore unrelated product and QR codes.
-                val isbn = value.replace("-", "").replace(" ", "")
-                if (!isbn.matches(Regex("(?:97[89])?\\d{9}[\\dXx]"))) return@addOnSuccessListener
-                if (isbn != lastBarcode) {
-                    lastBarcode = isbn
-                    lastDetectedBarcode = isbn
+                val raw = barcodes.firstNotNullOfOrNull { it.rawValue } ?: return@addOnSuccessListener
+                val clean = raw.trim()
+                if (clean.isNotEmpty() && clean != lastBarcode) {
+                    lastBarcode = clean
+                    lastDetectedBarcode = clean
                     lastDetectedBarcodeTime = System.currentTimeMillis()
-                    onBarcodeDetected?.invoke(isbn)
+                    onBarcodeDetected?.invoke(clean)
                 }
             }
             .addOnCompleteListener { bitmap.recycle() }

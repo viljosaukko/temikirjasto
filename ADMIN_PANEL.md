@@ -8,7 +8,9 @@ Open:
 
 Features:
 - Live MJPEG camera feed when temi exposes a usable Android camera to third-party apps.
-- Barcode scanner control: remotely toggle the ISBN scanner on/off, view last scanned ISBN, direct link to Finna catalog search, and trigger book lookup on the robot screen.
+- Device camera barcode scanner: use your phone, tablet, or laptop's camera directly in the browser to scan book barcodes (ISBN / library barcodes) with live audio/visual feedback, auto-look up book titles and authors from Finna, and dispatch searches or direct book records to the robot screen.
+- Manual book & code search: search by title, author, or barcode number directly from the admin panel to the robot screen.
+- Temi camera scanner: optionally toggle the robot's built-in camera scanner.
 - WASD keyboard driving.
 - Touch controls for phones/tablets.
 - STOP button.

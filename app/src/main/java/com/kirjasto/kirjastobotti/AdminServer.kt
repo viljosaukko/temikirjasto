@@ -1278,28 +1278,31 @@ class AdminServer(
 
 
                     /*
-                     * Trigger a book lookup on the robot screen for a specific ISBN.
-                     * POST /api/barcode-lookup?isbn=978...
+                     * Trigger a book or barcode lookup on the robot screen.
+                     * POST /api/barcode-lookup?query=...&recordId=...&isbn=...
                      */
                     method == "POST" &&
                             target == "/api/barcode-lookup" -> {
 
+                        val queryParam = query["query"]?.trim().orEmpty()
                         val isbn = query["isbn"]?.trim().orEmpty()
+                        val recordId = query["recordId"]?.trim().orEmpty().ifBlank { null }
+                        val searchTarget = if (queryParam.isNotBlank()) queryParam else isbn
                         val main = context as? MainActivity
 
-                        if (isbn.isBlank()) {
+                        if (searchTarget.isBlank() && recordId == null) {
                             writeText(
                                 it.getOutputStream(),
                                 400,
-                                "{\"ok\":false,\"error\":\"isbn required\"}",
+                                "{\"ok\":false,\"error\":\"query or recordId required\"}",
                                 "application/json; charset=utf-8"
                             )
                         } else {
-                            main?.lookupIsbn(isbn)
+                            main?.lookupBook(searchTarget, recordId)
                             writeText(
                                 it.getOutputStream(),
                                 200,
-                                "{\"ok\":true,\"isbn\":\"${jsonEscape(isbn)}\"}",
+                                "{\"ok\":true,\"query\":\"${jsonEscape(searchTarget)}\",\"recordId\":\"${jsonEscape(recordId ?: "")}\"}",
                                 "application/json; charset=utf-8"
                             )
                         }
@@ -2122,6 +2125,56 @@ button:active,
 }
 
 
+.scanner-viewport{
+    position:relative;
+    width:100%;
+    height:250px;
+    background:#050709;
+    border-radius:12px;
+    overflow:hidden;
+    border:2px solid #2563eb;
+    margin-top:10px
+}
+
+.scanner-viewport video{
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    display:block
+}
+
+.scanner-reticle{
+    position:absolute;
+    top:50%;
+    left:50%;
+    transform:translate(-50%,-50%);
+    width:70%;
+    height:140px;
+    border:2px dashed #38bdf8;
+    border-radius:10px;
+    box-shadow:0 0 0 9999px rgba(0,0,0,0.55);
+    pointer-events:none;
+    display:flex;
+    align-items:center;
+    justify-content:center
+}
+
+.scanner-laser{
+    position:absolute;
+    left:5%;
+    right:5%;
+    height:2px;
+    background:#ef4444;
+    box-shadow:0 0 8px #ef4444;
+    animation:laserSweep 1.8s infinite alternate ease-in-out
+}
+
+@keyframes laserSweep{
+    0%{top:10%}
+    100%{top:90%}
+}
+
+
 @media(max-width:850px){
 
     main{
@@ -2630,54 +2683,102 @@ button:active,
 <div id="barcodePanel" class="panel-hidden">
 
 <h1>
-    Barcode scanner
+    Barcode & Book Scanner
 </h1>
 
 <p class="hint">
-    Scan book ISBN barcodes using temi's camera. When a barcode is detected, temi automatically searches for the book in the library catalog. You can control scanning and look up items here.
+    Scan book barcodes using this device's camera, or search by book title, author, or code.
 </p>
 
+<!-- Device Camera Scanner Section -->
 <div class="section">
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button id="toggleBarcodeScan" class="config-save" style="background:#2563eb;font-size:15px;padding:12px 18px;width:auto">
-            📷 Start barcode scanning
+    <h2>Scan with this device</h2>
+    <p class="hint">Use your phone, tablet, or laptop camera to scan barcodes directly.</p>
+    <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">
+        <button id="btnToggleDeviceCamera" class="config-save" style="background:#2563eb;margin:0;width:auto;display:inline-flex;align-items:center;gap:6px">
+            📷 Start device camera
         </button>
-        <span id="barcodeScannerStatus" class="hint" style="font-weight:600"></span>
+        <button id="btnSwitchDeviceCamera" class="config-save" style="background:#1e293b;margin:0;width:auto;display:none">
+            🔄 Switch camera
+        </button>
+        <button id="btnTorchDeviceCamera" class="config-save" style="background:#1e293b;margin:0;width:auto;display:none">
+            💡 Torch
+        </button>
+    </div>
+
+    <div id="deviceCameraWrapper" style="display:none;margin-top:12px">
+        <div class="scanner-viewport" id="scannerViewport">
+            <video id="deviceScannerVideo" playsinline autoplay muted></video>
+            <div class="scanner-reticle">
+                <div class="scanner-laser"></div>
+            </div>
+            <canvas id="scannerCanvas" style="display:none"></canvas>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+            <span id="deviceCameraStatus" class="hint" style="color:#9fe3ad">Point camera at barcode…</span>
+            <label style="font-size:12px;color:#c7d0da;cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+                <input type="checkbox" id="autoSendToRobot" checked>
+                Auto-send to robot
+            </label>
+        </div>
     </div>
 </div>
 
+<!-- Latest Scanned Result & Book Preview -->
 <div class="section">
-    <h2>Latest scanned barcode</h2>
+    <h2>Latest item</h2>
     <div id="latestBarcodeCard" style="margin-top:10px;padding:14px;border:1px solid #283442;border-radius:10px;background:#0e141b">
         <div id="barcodeResultDisplay" style="color:#9aa7b5;font-size:14px">
             No barcode scanned yet.
         </div>
+        <div id="bookDetailsDisplay" style="margin-top:8px;font-size:13px;display:none">
+        </div>
         <div id="barcodeActions" style="display:none;margin-top:12px;gap:8px;flex-wrap:wrap">
-            <a id="barcodeFinnaLink" href="#" target="_blank" class="config-save" style="background:#2f6b3f;text-decoration:none;display:inline-flex;align-items:center;padding:8px 14px;font-size:13px;width:auto">
-                🔍 Open in Finna catalog
-            </a>
-            <button id="barcodeResendButton" class="config-save" style="background:#345a78;padding:8px 14px;font-size:13px;width:auto">
-                📺 Show on robot screen
+            <button id="barcodeSendRecordBtn" class="config-save" style="background:#16a34a;padding:8px 14px;font-size:13px;width:auto;display:none">
+                📖 Open book page on robot
             </button>
+            <button id="barcodeSendTitleBtn" class="config-save" style="background:#2563eb;padding:8px 14px;font-size:13px;width:auto;display:none">
+                📺 Search title on robot
+            </button>
+            <button id="barcodeSendCodeBtn" class="config-save" style="background:#345a78;padding:8px 14px;font-size:13px;width:auto">
+                🔢 Search code on robot
+            </button>
+            <a id="barcodeFinnaLink" href="#" target="_blank" class="config-save" style="background:#2f6b3f;text-decoration:none;display:inline-flex;align-items:center;padding:8px 14px;font-size:13px;width:auto">
+                🔍 View in Finna
+            </a>
         </div>
     </div>
 </div>
 
+<!-- Manual Search / Input -->
 <div class="section">
-    <h2>Manual ISBN lookup</h2>
-    <p class="hint">Type or paste an ISBN to search for the book directly on the robot's screen.</p>
+    <h2>Search book or code</h2>
+    <p class="hint">Search by book title, author, ISBN, or barcode number.</p>
     <div style="display:flex;gap:8px;margin-top:8px">
-        <input id="manualIsbnInput" class="config-input" type="text" placeholder="e.g. 9789510478349" autocomplete="off" style="flex:1">
-        <button id="manualIsbnButton" class="config-save" style="width:auto;margin:0;white-space:nowrap;background:#345a78;padding:10px 16px">
-            Search
+        <input id="manualSearchInput" class="config-input" type="text" placeholder="e.g. Harry Potter, Tove Jansson, or 9789511425007" autocomplete="off" style="flex:1">
+        <button id="manualSearchBtn" class="config-save" style="width:auto;margin:0;white-space:nowrap;background:#345a78;padding:10px 16px">
+            Search on robot
         </button>
     </div>
-    <div id="manualIsbnStatus" class="hint" style="margin-top:6px"></div>
+    <div id="manualSearchStatus" class="hint" style="margin-top:6px"></div>
 </div>
 
+<!-- Robot Built-in Camera Option -->
+<div class="section">
+    <h2>Temi robot built-in camera</h2>
+    <p class="hint">Optional: You can also toggle temi's built-in camera scanner.</p>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <button id="toggleBarcodeScan" class="config-save" style="background:#334155;font-size:13px;padding:8px 14px;width:auto;margin:0">
+            🤖 Toggle temi camera scan
+        </button>
+        <span id="barcodeScannerStatus" class="hint"></span>
+    </div>
+</div>
+
+<!-- History -->
 <div class="section">
     <div style="display:flex;justify-content:space-between;align-items:center">
-        <h2>Scan history</h2>
+        <h2>History</h2>
         <button id="clearBarcodeHistory" class="config-save" style="background:#552b31;font-size:11px;padding:4px 8px;width:auto;margin:0">
             Clear
         </button>
@@ -3571,10 +3672,48 @@ document.getElementById('barcodeTab').addEventListener('click', () => {
 let barcodeScanningActive = false;
 let lastKnownIsbn = '';
 let barcodeHistory = [];
-let libraryBaseUrl = 'https://ouka.finna.fi';
+let libraryBaseUrl = 'https://outi.finna.fi';
+
+let deviceCameraStream = null;
+let deviceCameraScanning = false;
+let currentFacingMode = 'environment';
+let currentTorchState = false;
+let lastScanTimestamp = 0;
+let barcodeDetector = null;
+
+if ('BarcodeDetector' in window) {
+    try {
+        barcodeDetector = new BarcodeDetector({
+            formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'upc_a', 'upc_e', 'qr_code', 'itf']
+        });
+    } catch (_) {
+        barcodeDetector = null;
+    }
+}
+
+function playScanBeep(){
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.12);
+    } catch (_) {}
+    if (navigator.vibrate) {
+        try { navigator.vibrate([60, 40, 60]); } catch (_) {}
+    }
+}
 
 function escapeBarcodeHtml(str){
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 async function loadBarcodeStatus(){
@@ -3594,18 +3733,18 @@ function updateBarcodeUi(data){
 
     if (toggleBtn && statusText) {
         if (barcodeScanningActive) {
-            toggleBtn.textContent = '⏹ Stop barcode scanning';
+            toggleBtn.textContent = '⏹ Stop temi camera scan';
             toggleBtn.style.background = '#dc2626';
-            statusText.textContent = '● Scanning active – hold ISBN barcode in front of camera';
+            statusText.textContent = '● Temi camera scanning active';
             statusText.style.color = '#9fe3ad';
         } else {
-            toggleBtn.textContent = '📷 Start barcode scanning';
-            toggleBtn.style.background = '#2563eb';
+            toggleBtn.textContent = '🤖 Toggle temi camera scan';
+            toggleBtn.style.background = '#334155';
             if (data.cameraReady === false) {
-                statusText.textContent = 'Camera not available';
+                statusText.textContent = 'Temi camera not available';
                 statusText.style.color = '#e07a5f';
             } else {
-                statusText.textContent = 'Ready';
+                statusText.textContent = 'Temi camera ready';
                 statusText.style.color = '#9aa7b5';
             }
         }
@@ -3613,30 +3752,122 @@ function updateBarcodeUi(data){
 
     if (data.lastIsbn && data.lastIsbn !== lastKnownIsbn) {
         lastKnownIsbn = data.lastIsbn;
-        renderNewBarcode(data.lastIsbn, data.lastScanTime);
+        handleDetectedBarcode(data.lastIsbn, data.lastScanTime, false);
     }
 }
 
-function renderNewBarcode(isbn, scanTime){
-    const display = document.getElementById('barcodeResultDisplay');
-    const actions = document.getElementById('barcodeActions');
-    const finnaLink = document.getElementById('barcodeFinnaLink');
-    if (!display) return;
-
-    const timeStr = scanTime ? new Date(scanTime).toLocaleTimeString() : new Date().toLocaleTimeString();
-    display.innerHTML = '<span style="font-size:20px;font-weight:700;font-family:monospace;color:#9fe3ad;letter-spacing:1px">' +
-        escapeBarcodeHtml(isbn) + '</span><span class="hint" style="margin-left:12px">scanned ' + timeStr + '</span>';
-
-    const finnaUrl = libraryBaseUrl.replace(/\/+$/, '') + '/Search/Results?lookfor=' + encodeURIComponent(isbn) + '&type=AllFields';
-    if (finnaLink) finnaLink.href = finnaUrl;
-    if (actions) actions.style.display = 'flex';
-
-    addToBarcodeHistory(isbn, timeStr, finnaUrl);
+async function lookupFinnaApi(query){
+    try {
+        const url = 'https://api.finna.fi/v1/search?lookfor=' + encodeURIComponent(query) + '&field[]=title&field[]=authors&field[]=year&field[]=id';
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const json = await resp.json();
+        if (json.records && json.records.length > 0) {
+            const rec = json.records[0];
+            let authorName = '';
+            if (rec.authors && rec.authors.primary) {
+                authorName = Object.keys(rec.authors.primary)[0] || '';
+            }
+            return {
+                title: rec.title || '',
+                author: authorName,
+                year: rec.year || '',
+                id: rec.id || ''
+            };
+        }
+    } catch (_) {}
+    return null;
 }
 
-function addToBarcodeHistory(isbn, timeStr, finnaUrl){
-    if (barcodeHistory.some(item => item.isbn === isbn && item.time === timeStr)) return;
-    barcodeHistory.unshift({ isbn, time: timeStr, url: finnaUrl });
+async function handleDetectedBarcode(code, scanTime, triggeredLocally){
+    const cleanCode = String(code).trim();
+    if (!cleanCode) return;
+    lastKnownIsbn = cleanCode;
+
+    const timeStr = scanTime ? new Date(scanTime).toLocaleTimeString() : new Date().toLocaleTimeString();
+    const display = document.getElementById('barcodeResultDisplay');
+    const bookDetails = document.getElementById('bookDetailsDisplay');
+    const actions = document.getElementById('barcodeActions');
+    const finnaLink = document.getElementById('barcodeFinnaLink');
+    const btnRecord = document.getElementById('barcodeSendRecordBtn');
+    const btnTitle = document.getElementById('barcodeSendTitleBtn');
+    const btnCode = document.getElementById('barcodeSendCodeBtn');
+
+    if (display) {
+        display.innerHTML = '<span style="font-size:18px;font-weight:700;font-family:monospace;color:#9fe3ad;letter-spacing:1px">' +
+            escapeBarcodeHtml(cleanCode) + '</span><span class="hint" style="margin-left:12px">scanned ' + timeStr + '</span>';
+    }
+
+    if (bookDetails) {
+        bookDetails.style.display = 'block';
+        bookDetails.innerHTML = '<span class="hint"><span class="icon icon--font fa fa-spinner icon--spin"></span> Looking up title in Finna catalog…</span>';
+    }
+
+    // Try resolving metadata
+    let book = await lookupFinnaApi(cleanCode);
+
+    if (book && book.title) {
+        if (bookDetails) {
+            bookDetails.innerHTML = '<div style="background:#131c26;border:1px solid #334e68;border-radius:8px;padding:10px;margin-top:8px">' +
+                '<div style="font-size:15px;font-weight:600;color:#eef2f7">📚 ' + escapeBarcodeHtml(book.title) + '</div>' +
+                (book.author ? '<div style="color:#9aa7b5;margin-top:2px">Author: ' + escapeBarcodeHtml(book.author) + (book.year ? ' (' + escapeBarcodeHtml(book.year) + ')' : '') + '</div>' : '') +
+                (book.id ? '<div class="hint" style="font-size:11px;margin-top:4px">ID: ' + escapeBarcodeHtml(book.id) + '</div>' : '') +
+                '</div>';
+        }
+
+        if (btnRecord && book.id) {
+            btnRecord.style.display = 'inline-block';
+            btnRecord.onclick = () => sendToRobot(book.title, book.id);
+        } else if (btnRecord) {
+            btnRecord.style.display = 'none';
+        }
+
+        if (btnTitle && book.title) {
+            btnTitle.style.display = 'inline-block';
+            btnTitle.onclick = () => sendToRobot(book.title, null);
+        } else if (btnTitle) {
+            btnTitle.style.display = 'none';
+        }
+    } else {
+        if (bookDetails) {
+            bookDetails.innerHTML = '<div class="hint" style="margin-top:4px">No title found in Finna index for this code. You can still search by code directly.</div>';
+        }
+        if (btnRecord) btnRecord.style.display = 'none';
+        if (btnTitle) btnTitle.style.display = 'none';
+    }
+
+    if (btnCode) {
+        btnCode.onclick = () => sendToRobot(cleanCode, null);
+    }
+
+    const finnaUrl = book && book.id ?
+        libraryBaseUrl.replace(/\/+$/, '') + '/Record/' + encodeURIComponent(book.id) :
+        libraryBaseUrl.replace(/\/+$/, '') + '/Search/Results?lookfor=' + encodeURIComponent(cleanCode) + '&type=AllFields';
+
+    if (finnaLink) {
+        finnaLink.href = finnaUrl;
+    }
+    if (actions) {
+        actions.style.display = 'flex';
+    }
+
+    addToBarcodeHistory(cleanCode, book ? book.title : '', timeStr, finnaUrl, book ? book.id : null);
+
+    // Auto-send to robot if enabled and scanned from device camera
+    if (triggeredLocally && document.getElementById('autoSendToRobot')?.checked) {
+        if (book && book.id) {
+            sendToRobot(book.title, book.id);
+        } else if (book && book.title) {
+            sendToRobot(book.title, null);
+        } else {
+            sendToRobot(cleanCode, null);
+        }
+    }
+}
+
+function addToBarcodeHistory(code, title, timeStr, finnaUrl, recordId){
+    if (barcodeHistory.some(item => item.code === code && item.time === timeStr)) return;
+    barcodeHistory.unshift({ code, title, time: timeStr, url: finnaUrl, recordId });
     if (barcodeHistory.length > 30) barcodeHistory.pop();
     renderBarcodeHistory();
 }
@@ -3651,20 +3882,24 @@ function renderBarcodeHistory(){
     list.replaceChildren();
     barcodeHistory.forEach(item => {
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;margin-bottom:6px;background:#141b23;border:1px solid #283442;border-radius:8px';
+        row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;margin-bottom:6px;background:#141b23;border:1px solid #283442;border-radius:8px;gap:8px';
 
         const left = document.createElement('div');
-        left.innerHTML = '<strong style="font-family:monospace;color:#eef2f7">' + escapeBarcodeHtml(item.isbn) + '</strong> <span class="hint" style="margin-left:8px;font-size:11px">' + item.time + '</span>';
+        left.style.cssText = 'flex:1;min-width:0';
+        let mainLabel = item.title ? escapeBarcodeHtml(item.title) : escapeBarcodeHtml(item.code);
+        let subLabel = item.title ? '<span style="font-family:monospace;font-size:11px;color:#9aa7b5">' + escapeBarcodeHtml(item.code) + '</span> ' : '';
+        left.innerHTML = '<div style="font-size:13px;font-weight:600;color:#eef2f7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + mainLabel + '</div>' +
+            '<div style="font-size:11px;color:#64748b">' + subLabel + '<span>' + item.time + '</span></div>';
 
         const btns = document.createElement('div');
-        btns.style.cssText = 'display:flex;gap:6px';
+        btns.style.cssText = 'display:flex;gap:6px;flex-shrink:0';
 
-        const searchBtn = document.createElement('button');
-        searchBtn.className = 'config-save';
-        searchBtn.style.cssText = 'width:auto;margin:0;padding:4px 8px;font-size:11px;background:#345a78';
-        searchBtn.textContent = '📺 Robot';
-        searchBtn.title = 'Search on robot screen';
-        searchBtn.onclick = () => sendIsbnToRobot(item.isbn);
+        const sendBtn = document.createElement('button');
+        sendBtn.className = 'config-save';
+        sendBtn.style.cssText = 'width:auto;margin:0;padding:4px 8px;font-size:11px;background:#345a78';
+        sendBtn.textContent = '📺 Robot';
+        sendBtn.title = 'Send to robot';
+        sendBtn.onclick = () => sendToRobot(item.title || item.code, item.recordId);
 
         const openBtn = document.createElement('a');
         openBtn.href = item.url;
@@ -3673,7 +3908,7 @@ function renderBarcodeHistory(){
         openBtn.style.cssText = 'width:auto;margin:0;padding:4px 8px;font-size:11px;background:#2f6b3f;text-decoration:none;display:inline-flex;align-items:center';
         openBtn.textContent = '🔍 Finna';
 
-        btns.appendChild(searchBtn);
+        btns.appendChild(sendBtn);
         btns.appendChild(openBtn);
         row.appendChild(left);
         row.appendChild(btns);
@@ -3681,22 +3916,175 @@ function renderBarcodeHistory(){
     });
 }
 
-async function sendIsbnToRobot(isbn){
-    const clean = isbn.trim();
-    if (!clean) return;
-    const status = document.getElementById('manualIsbnStatus');
-    if (status) status.textContent = 'Searching on robot screen...';
+async function sendToRobot(query, recordId){
+    const cleanQuery = (query || '').trim();
+    const cleanId = (recordId || '').trim();
+    if (!cleanQuery && !cleanId) return;
+
+    const status = document.getElementById('manualSearchStatus');
+    if (status) status.textContent = 'Sending to robot screen…';
+
+    const params = new URLSearchParams();
+    if (cleanQuery) params.set('query', cleanQuery);
+    if (cleanId) params.set('recordId', cleanId);
+
     try {
-        const response = await fetch('/api/barcode-lookup?isbn=' + encodeURIComponent(clean), { method: 'POST' });
+        const response = await fetch('/api/barcode-lookup?' + params.toString(), { method: 'POST' });
         const result = await response.json();
         if (result.ok && status) {
-            status.textContent = 'Book searched on robot: ' + clean;
+            status.textContent = 'Sent to robot: ' + (cleanQuery || cleanId);
         }
     } catch (e) {
-        if (status) status.textContent = 'Lookup failed: ' + e.message;
+        if (status) status.textContent = 'Send failed: ' + e.message;
     }
 }
 
+// Device camera handling
+async function startDeviceCamera(){
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert('Camera access is not supported by this browser.');
+        return;
+    }
+
+    try {
+        const constraints = {
+            video: {
+                facingMode: { ideal: currentFacingMode },
+                width: { ideal: 1280 },
+                height: { ideal: 720 }
+            },
+            audio: false
+        };
+
+        deviceCameraStream = await navigator.mediaDevices.getUserMedia(constraints);
+        const video = document.getElementById('deviceScannerVideo');
+        video.srcObject = deviceCameraStream;
+        await video.play();
+
+        deviceCameraScanning = true;
+        document.getElementById('deviceCameraWrapper').style.display = 'block';
+        document.getElementById('btnToggleDeviceCamera').textContent = '⏹ Stop device camera';
+        document.getElementById('btnToggleDeviceCamera').style.background = '#dc2626';
+        document.getElementById('btnSwitchDeviceCamera').style.display = 'inline-flex';
+
+        // Check torch support
+        const track = deviceCameraStream.getVideoTracks()[0];
+        if (track && track.getCapabilities && track.getCapabilities().torch) {
+            document.getElementById('btnTorchDeviceCamera').style.display = 'inline-flex';
+        }
+
+        requestAnimationFrame(scanDeviceVideoFrame);
+    } catch (err) {
+        alert('Could not start camera: ' + err.message);
+        stopDeviceCamera();
+    }
+}
+
+function stopDeviceCamera(){
+    deviceCameraScanning = false;
+    if (deviceCameraStream) {
+        deviceCameraStream.getTracks().forEach(track => track.stop());
+        deviceCameraStream = null;
+    }
+    const video = document.getElementById('deviceScannerVideo');
+    if (video) video.srcObject = null;
+
+    document.getElementById('deviceCameraWrapper').style.display = 'none';
+    document.getElementById('btnToggleDeviceCamera').textContent = '📷 Start device camera';
+    document.getElementById('btnToggleDeviceCamera').style.background = '#2563eb';
+    document.getElementById('btnSwitchDeviceCamera').style.display = 'none';
+    document.getElementById('btnTorchDeviceCamera').style.display = 'none';
+}
+
+async function scanDeviceVideoFrame(){
+    if (!deviceCameraScanning) return;
+    const video = document.getElementById('deviceScannerVideo');
+
+    if (video && video.readyState === video.HAVE_ENOUGH_DATA) {
+        const now = Date.now();
+        if (now - lastScanTimestamp > 1200) {
+            let foundCode = null;
+
+            if (barcodeDetector) {
+                try {
+                    const barcodes = await barcodeDetector.detect(video);
+                    if (barcodes && barcodes.length > 0) {
+                        foundCode = barcodes[0].rawValue;
+                    }
+                } catch (_) {}
+            }
+
+            if (foundCode && foundCode.trim()) {
+                lastScanTimestamp = now;
+                playScanBeep();
+
+                const viewport = document.getElementById('scannerViewport');
+                if (viewport) {
+                    viewport.style.borderColor = '#22c55e';
+                    setTimeout(() => { viewport.style.borderColor = '#2563eb'; }, 700);
+                }
+
+                document.getElementById('deviceCameraStatus').textContent = 'Scanned: ' + foundCode;
+                handleDetectedBarcode(foundCode, now, true);
+            }
+        }
+    }
+
+    if (deviceCameraScanning) {
+        requestAnimationFrame(scanDeviceVideoFrame);
+    }
+}
+
+document.getElementById('btnToggleDeviceCamera')?.addEventListener('click', () => {
+    if (deviceCameraScanning) {
+        stopDeviceCamera();
+    } else {
+        startDeviceCamera();
+    }
+});
+
+document.getElementById('btnSwitchDeviceCamera')?.addEventListener('click', async () => {
+    currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+    stopDeviceCamera();
+    startDeviceCamera();
+});
+
+document.getElementById('btnTorchDeviceCamera')?.addEventListener('click', async () => {
+    if (!deviceCameraStream) return;
+    const track = deviceCameraStream.getVideoTracks()[0];
+    if (track && track.getCapabilities && track.getCapabilities().torch) {
+        currentTorchState = !currentTorchState;
+        try {
+            await track.applyConstraints({ advanced: [{ torch: currentTorchState }] });
+            document.getElementById('btnTorchDeviceCamera').textContent = currentTorchState ? '💡 Torch ON' : '💡 Torch';
+        } catch (_) {}
+    }
+});
+
+// Manual Search
+document.getElementById('manualSearchBtn')?.addEventListener('click', async () => {
+    const input = document.getElementById('manualSearchInput');
+    const query = (input?.value || '').trim();
+    if (!query) {
+        const status = document.getElementById('manualSearchStatus');
+        if (status) status.textContent = 'Enter a title, author, or barcode number first.';
+        return;
+    }
+
+    const status = document.getElementById('manualSearchStatus');
+    if (status) status.textContent = 'Searching…';
+
+    handleDetectedBarcode(query, Date.now(), true);
+    input.value = '';
+});
+
+document.getElementById('manualSearchInput')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        document.getElementById('manualSearchBtn')?.click();
+    }
+});
+
+// Temi Camera Toggle
 document.getElementById('toggleBarcodeScan')?.addEventListener('click', async () => {
     const nextState = !barcodeScanningActive;
     try {
@@ -3707,30 +4095,6 @@ document.getElementById('toggleBarcodeScan')?.addEventListener('click', async ()
     } catch (e) {
         const statusText = document.getElementById('barcodeScannerStatus');
         if (statusText) statusText.textContent = 'Toggle failed: ' + e.message;
-    }
-});
-
-document.getElementById('barcodeResendButton')?.addEventListener('click', () => {
-    if (lastKnownIsbn) sendIsbnToRobot(lastKnownIsbn);
-});
-
-document.getElementById('manualIsbnButton')?.addEventListener('click', () => {
-    const input = document.getElementById('manualIsbnInput');
-    const isbn = input?.value.trim().orEmpty || input?.value.trim() || '';
-    if (!isbn) {
-        const status = document.getElementById('manualIsbnStatus');
-        if (status) status.textContent = 'Enter an ISBN first.';
-        return;
-    }
-    sendIsbnToRobot(isbn);
-    const finnaUrl = libraryBaseUrl.replace(/\/+$/, '') + '/Search/Results?lookfor=' + encodeURIComponent(isbn) + '&type=AllFields';
-    addToBarcodeHistory(isbn, new Date().toLocaleTimeString(), finnaUrl);
-    if (input) input.value = '';
-});
-
-document.getElementById('manualIsbnInput')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-        document.getElementById('manualIsbnButton')?.click();
     }
 });
 
